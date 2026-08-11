@@ -1,0 +1,291 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* YouJiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* YouJiApp.swift */; };
+		A10000000000000000000002 /* Models/GameRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* Models/GameRecord.swift */; };
+		A10000000000000000000003 /* Design/Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* Design/Theme.swift */; };
+		A10000000000000000000004 /* Services/KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* Services/KeychainStore.swift */; };
+		A10000000000000000000005 /* Services/NintendoOAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* Services/NintendoOAuth.swift */; };
+		A10000000000000000000006 /* Services/NintendoAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* Services/NintendoAPIClient.swift */; };
+		A10000000000000000000007 /* Services/SyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* Services/SyncCoordinator.swift */; };
+		A10000000000000000000009 /* Views/ConnectNintendoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* Views/ConnectNintendoView.swift */; };
+		A1000000000000000000000A /* Views/DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000A /* Views/DashboardView.swift */; };
+		A1000000000000000000000D /* Services/PlayStationAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000D /* Services/PlayStationAPIClient.swift */; };
+		A1000000000000000000000E /* Views/ConnectPlayStationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000E /* Views/ConnectPlayStationView.swift */; };
+		A1000000000000000000000F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000F /* Assets.xcassets */; };
+		A10000000000000000000010 /* Views/ExportDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* Views/ExportDataView.swift */; };
+		A10000000000000000000011 /* Services/CoverImageStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* Services/CoverImageStore.swift */; };
+		A10000000000000000000012 /* Views/CachedCoverImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* Views/CachedCoverImage.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		B10000000000000000000001 /* YouJiApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouJiApp.swift; sourceTree = "<group>"; };
+		B10000000000000000000002 /* Models/GameRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/GameRecord.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 /* Design/Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Design/Theme.swift; sourceTree = "<group>"; };
+		B10000000000000000000004 /* Services/KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/KeychainStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000005 /* Services/NintendoOAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/NintendoOAuth.swift; sourceTree = "<group>"; };
+		B10000000000000000000006 /* Services/NintendoAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/NintendoAPIClient.swift; sourceTree = "<group>"; };
+		B10000000000000000000007 /* Services/SyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/SyncCoordinator.swift; sourceTree = "<group>"; };
+		B10000000000000000000009 /* Views/ConnectNintendoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/ConnectNintendoView.swift; sourceTree = "<group>"; };
+		B1000000000000000000000A /* Views/DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/DashboardView.swift; sourceTree = "<group>"; };
+		B1000000000000000000000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B1000000000000000000000C /* YouJi.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = YouJi.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B1000000000000000000000D /* Services/PlayStationAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/PlayStationAPIClient.swift; sourceTree = "<group>"; };
+		B1000000000000000000000E /* Views/ConnectPlayStationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/ConnectPlayStationView.swift; sourceTree = "<group>"; };
+		B1000000000000000000000F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B10000000000000000000010 /* Views/ExportDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/ExportDataView.swift; sourceTree = "<group>"; };
+		B10000000000000000000011 /* Services/CoverImageStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/CoverImageStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000012 /* Views/CachedCoverImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/CachedCoverImage.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C10000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		D10000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				D10000000000000000000002 /* YouJi */,
+				D10000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		D10000000000000000000002 /* YouJi */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000001 /* YouJiApp.swift */,
+				B10000000000000000000002 /* Models/GameRecord.swift */,
+				B10000000000000000000003 /* Design/Theme.swift */,
+				B10000000000000000000004 /* Services/KeychainStore.swift */,
+				B10000000000000000000005 /* Services/NintendoOAuth.swift */,
+				B10000000000000000000006 /* Services/NintendoAPIClient.swift */,
+				B10000000000000000000007 /* Services/SyncCoordinator.swift */,
+				B10000000000000000000009 /* Views/ConnectNintendoView.swift */,
+				B1000000000000000000000A /* Views/DashboardView.swift */,
+				B1000000000000000000000D /* Services/PlayStationAPIClient.swift */,
+				B1000000000000000000000E /* Views/ConnectPlayStationView.swift */,
+				B1000000000000000000000F /* Assets.xcassets */,
+				B10000000000000000000010 /* Views/ExportDataView.swift */,
+				B10000000000000000000011 /* Services/CoverImageStore.swift */,
+				B10000000000000000000012 /* Views/CachedCoverImage.swift */,
+				B1000000000000000000000B /* Info.plist */,
+			);
+			path = YouJi;
+			sourceTree = "<group>";
+		};
+		D10000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B1000000000000000000000C /* YouJi.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E10000000000000000000001 /* YouJi */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F10000000000000000000002 /* Build configuration list for PBXNativeTarget "YouJi" */;
+			buildPhases = (
+				C10000000000000000000003 /* Sources */,
+				C10000000000000000000001 /* Frameworks */,
+				C10000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = YouJi;
+			productName = YouJi;
+			productReference = B1000000000000000000000C /* YouJi.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E10000000000000000000002 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2620;
+				LastUpgradeCheck = 2620;
+				TargetAttributes = {
+					E10000000000000000000001 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+				};
+			};
+			buildConfigurationList = F10000000000000000000001 /* Build configuration list for PBXProject "YouJi" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = zh_CN;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				zh_CN,
+				en,
+			);
+			mainGroup = D10000000000000000000001;
+			productRefGroup = D10000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E10000000000000000000001 /* YouJi */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		C10000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000000000000000000000F /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		C10000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000001 /* YouJiApp.swift in Sources */,
+				A10000000000000000000002 /* Models/GameRecord.swift in Sources */,
+				A10000000000000000000003 /* Design/Theme.swift in Sources */,
+				A10000000000000000000004 /* Services/KeychainStore.swift in Sources */,
+				A10000000000000000000005 /* Services/NintendoOAuth.swift in Sources */,
+				A10000000000000000000006 /* Services/NintendoAPIClient.swift in Sources */,
+				A10000000000000000000007 /* Services/SyncCoordinator.swift in Sources */,
+				A10000000000000000000009 /* Views/ConnectNintendoView.swift in Sources */,
+				A1000000000000000000000A /* Views/DashboardView.swift in Sources */,
+				A1000000000000000000000D /* Services/PlayStationAPIClient.swift in Sources */,
+				A1000000000000000000000E /* Views/ConnectPlayStationView.swift in Sources */,
+				A10000000000000000000010 /* Views/ExportDataView.swift in Sources */,
+				A10000000000000000000011 /* Services/CoverImageStore.swift in Sources */,
+				A10000000000000000000012 /* Views/CachedCoverImage.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		F10000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		F10000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		F10000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = YouJi/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.youji.playlog;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		F10000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = YouJi/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.youji.playlog;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		F10000000000000000000001 /* Build configuration list for PBXProject "YouJi" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F10000000000000000000003 /* Debug */,
+				F10000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F10000000000000000000002 /* Build configuration list for PBXNativeTarget "YouJi" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F10000000000000000000005 /* Debug */,
+				F10000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E10000000000000000000002 /* Project object */;
+}

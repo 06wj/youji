@@ -1,0 +1,38 @@
+# macOS
+.DS_Store
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+*.xcresult
+*.xccheckout
+*.xcscmblueprint
+DerivedData/
+build/
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Signing and local configuration
+*.mobileprovision
+*.p12
+*.cer
+*.pem
+Config.local.xcconfig
+.env
+.env.*
+!.env.example
+
+# Local databases and original screenshots
+*.store
+*.store-shm
+*.store-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.heic
+*.HEIC
