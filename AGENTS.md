@@ -16,23 +16,31 @@ The interface is Chinese-first. Prefer an official Chinese game title when a pla
 - Xcode project: `YouJi.xcodeproj`
 - Shared scheme: `YouJi`
 - No third-party package dependencies
-- No automated test target currently exists
+- Unit test target: `YouJiTests`
 
 ## Source map
 
 | Path | Responsibility |
 | --- | --- |
 | `YouJi/Models/GameRecord.swift` | SwiftData model, platform identity, library visibility rule |
+| `YouJi/Models/AIConversation.swift` | Persistent AI conversation, messages, and frozen game context |
 | `YouJi/Services/SyncCoordinator.swift` | Only coordinator between views, platform clients, and persistence |
 | `YouJi/Services/PlayStationAPIClient.swift` | PSN authorization, game pagination, localization, trophy fetching and caching |
 | `YouJi/Services/NintendoOAuth.swift` | Nintendo PKCE authorization request and callback parsing |
 | `YouJi/Services/NintendoAPIClient.swift` | Nintendo token exchange and play-activity mapping |
-| `YouJi/Services/KeychainStore.swift` | Platform session credential storage |
+| `YouJi/Services/KeychainStore.swift` | Platform session and AI API-key storage |
+| `YouJi/Services/AIAnalysisClient.swift` | Explicit AI game-profile and multi-turn chat requests |
+| `YouJi/Services/AIPrompts.swift` | Shared game-brain context plus profile and chat prompt rules |
+| `YouJi/Services/AISettingsStore.swift` | AI Keychain and model-name settings |
 | `YouJi/Services/CoverImageStore.swift` | Persistent local cover cache and download deduplication |
 | `YouJi/Views/DashboardView.swift` | Dashboard, platform tabs, sorting, lists, platform-specific sync buttons |
-| `YouJi/Views/ExportDataView.swift` | Local filtering, preview, and clipboard export |
+| `YouJi/Views/AIAnalysisView.swift` | Local filtering, preview, AI profile, and auxiliary clipboard copy |
+| `YouJi/Views/AIChatListView.swift` | Persistent conversation list, creation, continuation, and deletion |
+| `YouJi/Views/AIChatView.swift` | Multi-turn conversation view and automatic title generation |
+| `YouJi/Views/SettingsView.swift` | User-owned AI API key and model configuration |
 | `YouJi/Views/Connect*View.swift` | Official platform web authorization UI |
 | `YouJi/Design/Theme.swift` | Shared colors and visual styles |
+| `YouJiTests/` | Account identity, date parsing, visibility, and snapshot regression tests |
 
 ## Product invariants
 
@@ -49,13 +57,17 @@ Preserve these behaviors unless the user explicitly changes the product requirem
 9. AI export filters by all/PS/Switch and strict minimum play time (`> 1h`, `> 2h`, `> 10h`, `> 50h`), previews cover thumbnails, and sorts by play time descending.
 10. Exported text contains the game name, play time, and trophy ratio. Switch trophies are marked not applicable.
 11. Cover art is stored locally after the first successful download and is excluded from iCloud backup.
+12. AI analysis is never automatic on view appearance. It runs only after an explicit generate action and uses the current filtered result.
+13. AI chat is never automatic. A new conversation snapshots all current-account games with strictly more than 60 minutes; every request includes that snapshot plus the current conversation, and requests happen only after the user sends a message.
+14. AI conversations persist locally, can be created, continued, and deleted, and request a short title after the second AI reply.
 
 ## Data and identity rules
 
-- `GameRecord.applicationID` is globally unique. Use `ps:<titleID>` for PlayStation and `switch:<titleID>` for Nintendo.
+- `GameRecord.applicationID` is globally unique. Use `<platform>:<accountID>:<titleID>`; never merge records from different accounts.
+- `PlaySnapshot` is append-only synchronization history. Store cumulative minutes and trophies for the current platform account after a completed sync.
 - `GameRecord.totalMinutes` is the canonical duration unit. Convert only for display/export.
 - Keep the seven-element `weeklyMinutes` array ordered oldest to newest according to the existing Nintendo mapping.
-- Keep credentials in Keychain with `AfterFirstUnlockThisDeviceOnly`. Never put tokens in SwiftData, UserDefaults, source files, fixtures, screenshots, or logs.
+- Keep credentials and the user-provided AI API key in Keychain with `AfterFirstUnlockThisDeviceOnly`. Never put them in SwiftData, UserDefaults, source files, fixtures, screenshots, or logs.
 - UserDefaults is only for non-sensitive display state such as nicknames, sync timestamps, and the cached PS trophy summary.
 - Do not log authorization cookies, NPSSO values, OAuth codes, refresh tokens, Nintendo session tokens, or complete response bodies.
 - Disconnecting an account removes its credential and display identity; it does not silently delete the user's local game history.
@@ -64,8 +76,10 @@ Preserve these behaviors unless the user explicitly changes the product requirem
 
 - Views should call `SyncCoordinator`; they should not call platform API clients directly.
 - Do not add background or automatic synchronization without explicit user approval.
-- Preserve PS trophy incremental caching: if `trophiesSyncedAt` is at or after `lastPlayedAt`, reuse the cached game trophy result. Refresh only stale games.
-- A 401 invalidates the affected platform credential and requires reconnection. Other failures should preserve local records and the other platform's session.
+- AI analysis must never receive platform credentials, account IDs, cover data, or unfiltered database contents. Only platform, title, total minutes, and trophy ratio from the visible export filter are allowed.
+- Preserve PS two-stage persistence: save the full game list first, then fetch trophies serially and save each successful title immediately.
+- Preserve PS trophy incremental caching: if `trophiesSyncedAt` is at or after `lastPlayedAt`, reuse the cached game trophy result. Failed or unmapped responses must not advance `trophiesSyncedAt`.
+- Authentication failures including 401, 403, `invalid_grant`, and `invalid_token` invalidate the affected credential and require reconnection. Other failures should preserve local records and the other platform's session.
 - Upserts must not remove games just because a platform response is partial or temporarily empty.
 - The PlayStation and Nintendo endpoints used here are not stable public third-party APIs. Keep platform request/response compatibility changes inside the relevant client.
 
@@ -95,8 +109,19 @@ Also run the checks relevant to the change:
 
 ```bash
 plutil -lint YouJi/Info.plist
-find YouJi/Assets.xcassets -name Contents.json -print0 | xargs -0 -n1 plutil -lint
+find YouJi/Assets.xcassets -name Contents.json -exec jq -e . {} \;
 git diff --check
+```
+
+Run unit tests on an available simulator:
+
+```bash
+xcodebuild \
+  -project YouJi.xcodeproj \
+  -scheme YouJi \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  CODE_SIGNING_ALLOWED=NO \
+  test
 ```
 
 Authentication and live platform data require a physical iPhone and real accounts. Do not claim PSN or Nintendo sync is verified from a simulator-only build. When changing authorization, token exchange, headers, decoding, trophy mapping, or pagination, explicitly request or report the need for a real-device check.

@@ -16,7 +16,7 @@
   <img src="docs/screenshots/overview.jpg" width="23%" alt="游迹总览">
   <img src="docs/screenshots/playstation.jpg" width="23%" alt="PlayStation 游戏与奖杯">
   <img src="docs/screenshots/switch.jpg" width="23%" alt="Switch 近 7 天游玩">
-  <img src="docs/screenshots/export.jpg" width="23%" alt="筛选并导出给 AI 分析">
+  <img src="docs/screenshots/export.jpg" width="23%" alt="AI 游戏人格分析">
 </p>
 
 ## 你可以用游迹做什么
@@ -48,13 +48,18 @@
 - 首页自动隐藏“游玩不足 1 小时且超过半年未玩”的记录，减少试玩和误启动带来的干扰。
 - 隐藏只影响首页展示，不删除任何本地记录。
 
-### 导出给 AI 分析
+### AI 游戏人格分析
 
 - 按 PlayStation、Switch 或全部平台筛选。
 - 筛选大于 1 / 2 / 10 / 50 小时的游戏。
 - 带封面预览游戏名称、时长和奖杯完成率。
+- 使用自己的 API Key，一键生成游戏人格、核心偏好、投入深度与挑战倾向分析。
+- API Key 保存在系统 Keychain，模型名称可在设置中修改。
 - 一键复制文本，可交给任意 AI 做偏好、类型与时间投入分析。
-- 导出始终读取完整本地数据，不受首页隐藏规则影响。
+- AI 分析始终读取完整本地数据，不受首页隐藏规则影响。
+- 从首页顶部进入 AI 分析，并可继续打开游戏聊天。
+- 聊天默认了解全部游玩超过 1 小时的游戏；会话和此前问答保存在本地，可从会话列表继续、新建或删除。
+- 对话达到两轮后，AI 会根据实际话题生成简短标题，便于以后查找。
 
 ## 使用方式
 
@@ -62,7 +67,7 @@
 2. 在平台官方页面完成账号授权。
 3. 再次点击对应按钮即可单独同步该平台。
 4. 切换总览或平台页面，查看游戏、奖杯与近期活动。
-5. 点击“分析导出”，筛选并复制需要的数据。
+5. 点击首页顶部的“AI”，筛选后生成游戏人格，或进入聊天继续追问；需要时也可复制分析依据。
 
 PlayStation 当前只提供每款游戏的累计时长和最近游玩时间，不提供逐日时长；Switch 页面因此拥有独立的近 7 天统计。
 
@@ -70,8 +75,11 @@ PlayStation 当前只提供每款游戏的累计时长和最近游玩时间，�
 
 - 不读取或保存 PlayStation / Nintendo 账号密码。
 - PlayStation 刷新令牌与 Nintendo 长期会话令牌只保存在这台 iPhone 的 Keychain。
-- 游戏记录、筛选、排序和分析导出均在本地完成。
+- 游戏记录、AI 会话、筛选、排序和分析预览均在本地保存或完成。
+- 每次同步会在本地保存累计时长和奖杯快照，为后续按周、月、年统计增量做好准备。
 - 只有用户主动点击 PS / NS 同步按钮时才会访问平台服务。
+- AI 分析和聊天只在用户主动生成或发送时请求模型服务，并仅发送游戏名称、平台、时长、奖杯比例和当前聊天内容；对话达到两轮后会额外生成一次短标题。
+- AI API Key 只存入这台 iPhone 的 Keychain，不写入游戏数据库或仓库。
 - 仓库不包含任何个人账号、令牌或本地游戏数据。
 
 ---
@@ -104,10 +112,11 @@ xcodebuild \
 ### 实现
 
 - SwiftUI：界面与交互
-- SwiftData：本地游戏记录
+- SwiftData：本地游戏记录、同步快照和 AI 会话
 - Swift Charts：Switch 近 7 天活动
 - AuthenticationServices / WebKit：平台网页登录
-- Keychain Services：会话令牌
+- Keychain Services：平台会话令牌与用户填写的 AI API Key
+- URLSession：OpenAI Chat Completions 兼容的 AI 文本分析
 - CryptoKit：封面缓存文件名
 
 游戏封面保存在 `Application Support/YouJi/Covers`，平台令牌使用 `AfterFirstUnlockThisDeviceOnly` 级别写入 Keychain。
@@ -118,14 +127,16 @@ xcodebuild \
 YouJi/
 ├── Assets.xcassets/       # App 图标与品牌资源
 ├── Design/                # 颜色与通用视图样式
-├── Models/                # SwiftData 游戏模型
-├── Services/              # 平台同步、Keychain 与封面缓存
-├── Views/                 # 首页、登录和分析导出
+├── Models/                # SwiftData 游戏、快照与 AI 会话模型
+├── Services/              # 平台同步、AI 分析、Keychain 与封面缓存
+├── Views/                 # 首页、登录、AI 分析、游戏聊天和设置
 └── YouJiApp.swift         # App 入口
 
 docs/
 ├── ARCHITECTURE.md        # 数据流、存储与同步设计
 └── screenshots/           # README 截图（JPG，已移除 EXIF）
+
+YouJiTests/                # 数据模型与解析回归测试
 ```
 
 详细的数据流和平台同步逻辑见 [架构说明](docs/ARCHITECTURE.md)。

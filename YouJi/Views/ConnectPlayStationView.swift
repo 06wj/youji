@@ -97,7 +97,7 @@ private struct PlayStationLoginWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+        configuration.websiteDataStore = .nonPersistent()
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
@@ -121,6 +121,7 @@ private struct PlayStationLoginWebView: UIViewRepresentable {
         init(_ parent: PlayStationLoginWebView) { self.parent = parent }
 
         func readCredential(from webView: WKWebView) {
+            guard !readingCredential else { return }
             readingCredential = true
             webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
                 if let npsso = cookies.first(where: { $0.name.lowercased() == "npsso" })?.value,
