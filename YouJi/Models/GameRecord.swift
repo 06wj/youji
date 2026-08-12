@@ -12,6 +12,8 @@ enum GamePlatform: String, Codable, CaseIterable, Sendable {
 @Model
 final class GameRecord {
     @Attribute(.unique) var applicationID: String
+    var accountID: String = ""
+    var titleID: String = ""
     var platformRaw: String = GamePlatform.switchConsole.rawValue
     var title: String
     var totalMinutes: Int
@@ -27,6 +29,8 @@ final class GameRecord {
 
     init(
         applicationID: String,
+        accountID: String = "",
+        titleID: String = "",
         platform: GamePlatform,
         title: String,
         totalMinutes: Int = 0,
@@ -40,6 +44,8 @@ final class GameRecord {
         trophiesSyncedAt: Date? = nil
     ) {
         self.applicationID = applicationID
+        self.accountID = accountID
+        self.titleID = titleID
         self.platformRaw = platform.rawValue
         self.title = title
         self.totalMinutes = totalMinutes
@@ -72,10 +78,54 @@ final class GameRecord {
         }
         return lastPlayedAt < cutoff
     }
+
+    static func recordID(platform: GamePlatform, accountID: String, titleID: String) -> String {
+        "\(platform == .playStation ? "ps" : "switch"):\(accountID):\(titleID)"
+    }
+
+    var resolvedTitleID: String {
+        if !titleID.isEmpty { return titleID }
+        if applicationID.hasPrefix("ps:") { return String(applicationID.dropFirst(3)) }
+        if applicationID.hasPrefix("switch:") { return String(applicationID.dropFirst(7)) }
+        return applicationID
+    }
+}
+
+@Model
+final class PlaySnapshot {
+    @Attribute(.unique) var snapshotID: String
+    var gameID: String
+    var accountID: String
+    var platformRaw: String
+    var date: Date
+    var totalMinutes: Int
+    var trophiesEarned: Int
+
+    init(
+        snapshotID: String = UUID().uuidString,
+        gameID: String,
+        accountID: String,
+        platform: GamePlatform,
+        date: Date = .now,
+        totalMinutes: Int,
+        trophiesEarned: Int
+    ) {
+        self.snapshotID = snapshotID
+        self.gameID = gameID
+        self.accountID = accountID
+        self.platformRaw = platform.rawValue
+        self.date = date
+        self.totalMinutes = totalMinutes
+        self.trophiesEarned = trophiesEarned
+    }
+
+    var platform: GamePlatform {
+        GamePlatform(rawValue: platformRaw) ?? .switchConsole
+    }
 }
 
 struct SyncedGame: Sendable {
-    let applicationID: String
+    let titleID: String
     let platform: GamePlatform
     var title: String
     var totalMinutes: Int

@@ -7,7 +7,7 @@ struct YouJiApp: App {
 
     init() {
         do {
-            container = try ModelContainer(for: GameRecord.self)
+            container = try ModelContainer(for: GameRecord.self, PlaySnapshot.self, AIConversation.self)
         } catch {
             fatalError("无法初始化本地数据库：\(error.localizedDescription)")
         }

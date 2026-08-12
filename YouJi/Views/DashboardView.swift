@@ -40,10 +40,12 @@ struct DashboardView: View {
     @State private var showConnectionOptions = false
     @State private var filter: LibraryFilter = .all
     @State private var gameSort: GameSort = .playTime
-    @State private var showExport = false
+	@State private var showAIAnalysis = false
+	@State private var showSettings = false
     @State private var syncingPlatform: GamePlatform?
 
-    private var displayableGames: [GameRecord] { games.filter { !$0.shouldHideFromLibrary } }
+    private var currentAccountGames: [GameRecord] { games.filter(sync.owns) }
+    private var displayableGames: [GameRecord] { currentAccountGames.filter { !$0.shouldHideFromLibrary } }
 
     private var visibleGames: [GameRecord] {
         let filtered: [GameRecord]
@@ -124,9 +126,12 @@ struct DashboardView: View {
                 case .switchConsole: ConnectNintendoView(coordinator: sync)
                 }
             }
-            .sheet(isPresented: $showExport) {
-                ExportDataView(games: games)
+			.sheet(isPresented: $showAIAnalysis) {
+				AIAnalysisView(games: currentAccountGames)
             }
+			.sheet(isPresented: $showSettings) {
+				SettingsView()
+			}
             .confirmationDialog("连接游戏平台", isPresented: $showConnectionOptions, titleVisibility: .visible) {
                 Button(sync.isPlayStationConnected ? "PlayStation 已连接" : "连接 PlayStation") { connectionSheet = .playStation }
                 Button(sync.isNintendoConnected ? "Switch 已连接" : "连接 Nintendo Switch") { connectionSheet = .switchConsole }
@@ -158,6 +163,27 @@ struct DashboardView: View {
             Spacer()
             platformSyncButton(.playStation)
             platformSyncButton(.switchConsole)
+			Button { showAIAnalysis = true } label: {
+				HStack(spacing: 4) {
+					Image(systemName: "sparkles")
+					Text("AI")
+				}
+				.font(.system(size: 9, weight: .black, design: .rounded))
+				.foregroundStyle(.white)
+				.frame(width: 45, height: 36)
+				.background(YJColor.purple, in: Capsule())
+			}
+			.buttonStyle(.plain)
+			.accessibilityLabel("AI 游戏分析")
+			Button { showSettings = true } label: {
+				Image(systemName: "gearshape.fill")
+					.font(.caption.bold())
+					.foregroundStyle(YJColor.ink)
+					.frame(width: 36, height: 36)
+					.background(Color.white.opacity(0.72), in: Circle())
+					.overlay(Circle().stroke(Color.white.opacity(0.85)))
+			}
+			.buttonStyle(.plain)
         }.padding(.top, 8)
     }
 
@@ -427,16 +453,6 @@ struct DashboardView: View {
                     Text(filter == .all ? "全部冒险" : "\(filter.rawValue) 冒险").font(.title.bold())
                 }
                 Spacer()
-                Button {
-                    showExport = true
-                } label: {
-                    Label("分析导出", systemImage: "square.and.arrow.up")
-                        .font(.caption.bold()).foregroundStyle(YJColor.ink)
-                        .padding(.horizontal, 11).padding(.vertical, 7)
-                        .background(YJColor.card, in: Capsule())
-                        .overlay(Capsule().stroke(YJColor.line))
-                }
-                .buttonStyle(.plain)
             }
 
             HStack {

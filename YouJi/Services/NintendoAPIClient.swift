@@ -71,12 +71,17 @@ actor NintendoAPIClient {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
             let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let errorCode = body?["error"] as? String
             let serverMessage = body?["detail"] as? String
                 ?? body?["error_description"] as? String
                 ?? body?["message"] as? String
                 ?? body?["error"] as? String
             let message = serverMessage.map { "\(stage)：\($0)" } ?? stage
-            throw NintendoSyncError.http((response as? HTTPURLResponse)?.statusCode ?? -1, message)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            if code == 401 || code == 403 || ["invalid_grant", "invalid_token"].contains(errorCode) {
+                throw NintendoSyncError.authenticationExpired(message)
+            }
+            throw NintendoSyncError.http(code, message)
         }
         do { return try decoder.decode(T.self, from: data) }
         catch { throw NintendoSyncError.decode("\(stage)：\(error.localizedDescription)") }
@@ -94,7 +99,7 @@ actor NintendoAPIClient {
         var weeklyByTitle: [String: [Int]] = [:]
 
         for day in history.recentPlayHistories {
-            guard let date = Self.parseDate(day.playedDate) else { continue }
+            guard let date = Self.parsePlayedDay(day.playedDate) else { continue }
             let offset = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: today).day ?? 99
             guard (0...6).contains(offset) else { continue }
             for item in day.dailyPlayHistories {
@@ -106,7 +111,7 @@ actor NintendoAPIClient {
 
         return history.playHistories.map { item in
             SyncedGame(
-                applicationID: "switch:\(item.titleID)",
+                titleID: item.titleID,
                 platform: .switchConsole,
                 title: item.titleName,
                 totalMinutes: item.totalPlayedMinutes,
@@ -118,8 +123,28 @@ actor NintendoAPIClient {
         }
     }
 
-    private static func parseDate(_ value: String) -> Date? {
-        ISO8601DateFormatter().date(from: value)
+    static func parseDate(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+        if let date = ISO8601DateFormatter().date(from: value) { return date }
+
+        let day = DateFormatter()
+        day.calendar = Calendar(identifier: .gregorian)
+        day.locale = Locale(identifier: "en_US_POSIX")
+        day.timeZone = .current
+        day.dateFormat = "yyyy-MM-dd"
+        return day.date(from: value)
+    }
+
+    static func parsePlayedDay(_ value: String) -> Date? {
+        guard value.count >= 10 else { return nil }
+        let day = DateFormatter()
+        day.calendar = Calendar(identifier: .gregorian)
+        day.locale = Locale(identifier: "en_US_POSIX")
+        day.timeZone = .current
+        day.dateFormat = "yyyy-MM-dd"
+        return day.date(from: String(value.prefix(10)))
     }
 }
 
@@ -170,11 +195,14 @@ struct StoreRecentTitle: Decodable {
 }
 
 enum NintendoSyncError: LocalizedError {
+    case authenticationExpired(String?)
     case http(Int, String?)
     case decode(String)
 
     var errorDescription: String? {
         switch self {
+        case .authenticationExpired:
+            "Nintendo 登录已过期，请重新连接。"
         case .http(401, _): "Nintendo 登录已过期，请重新连接。"
         case .http(let code, let message): message ?? "Nintendo Store 服务返回错误（\(code)）"
         case .decode(let message): "Nintendo Store 数据格式已变化：\(message)"

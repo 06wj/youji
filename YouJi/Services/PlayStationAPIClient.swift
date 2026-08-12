@@ -31,58 +31,44 @@ actor PlayStationAPIClient {
         ])
     }
 
-    func loadLibrary(
-        accessToken: String,
-        trophyCache: [String: PlayStationTrophyCacheEntry] = [:],
-        cachedTrophySummary: PlayStationTrophySummary? = nil
-    ) async throws -> PlayStationSyncPayload {
-        logger.info("Loading PlayStation games with incremental trophy cache")
+    func loadGames(accessToken: String) async throws -> PlayStationGamesPayload {
+        let accountID = try Self.accountID(from: accessToken)
         let titles = try await loadAllPlayedGames(accessToken: accessToken)
-        var trophyByTitleID: [String: PlayStationMappedTrophies] = [:]
-        var staleTitleIDs = Set<String>()
-
-        for title in titles {
-            let lastPlayedAt = Self.parseDate(title.lastPlayedDateTime)
-            if let cached = trophyCache[title.titleID],
-               lastPlayedAt == nil || cached.syncedAt >= lastPlayedAt! {
-                trophyByTitleID[title.titleID] = PlayStationMappedTrophies(
-                    defined: cached.defined,
-                    earned: cached.earned,
-                    platinum: cached.platinum,
-                    syncedAt: cached.syncedAt
-                )
-            } else {
-                staleTitleIDs.insert(title.titleID)
-            }
-        }
-
-        if !staleTitleIDs.isEmpty {
-            let refreshed = try await loadTrophiesForTitles(
-                titleIDs: Array(staleTitleIDs),
-                accessToken: accessToken
-            )
-            let refreshedAt = Date.now
-            for titleID in staleTitleIDs {
-                trophyByTitleID[titleID] = refreshed[titleID] ?? .empty(syncedAt: refreshedAt)
-            }
-        }
-
-        let trophies: PlayStationTrophySummary
-        if staleTitleIDs.isEmpty, let cachedTrophySummary {
-            trophies = cachedTrophySummary
-        } else {
-            trophies = try await authorizedGET(
-                "https://m.np.playstation.com/api/trophy/v1/users/me/trophySummary",
-                accessToken: accessToken,
-                stage: "读取 PSN 奖杯统计"
-            )
-        }
-        logger.info("Trophy cache hit \(titles.count - staleTitleIDs.count)/\(titles.count); refreshed \(staleTitleIDs.count)")
-
-        return PlayStationSyncPayload(
+        return PlayStationGamesPayload(
+            accountID: accountID,
             accountName: "PlayStation Network",
-            games: normalize(titles, trophyByTitleID: trophyByTitleID),
-            trophies: trophies
+            games: normalizeGames(titles),
+            titles: titles.map { PlayStationTitleIdentity(titleID: $0.titleID, lastPlayedAt: Self.parseDate($0.lastPlayedDateTime)) }
+        )
+    }
+
+    func loadTrophy(titleID: String, accessToken: String) async throws -> PlayStationTrophyUpdate? {
+        var components = URLComponents(string: "https://m.np.playstation.com/api/trophy/v1/users/me/titles/trophyTitles")!
+        components.queryItems = [URLQueryItem(name: "npTitleIds", value: titleID)]
+        let response: PlayStationTrophyTitlesForIDsResponse = try await authorizedGET(
+            components.url!.absoluteString,
+            accessToken: accessToken,
+            stage: "按游戏 ID 读取奖杯"
+        )
+        guard !response.titles.isEmpty else { return nil }
+        let trophyTitles = response.titles.flatMap(\.trophyTitles)
+        guard !trophyTitles.isEmpty else { return nil }
+        let defined = trophyTitles.reduce(PlayStationTrophyCounts.zero) { $0.adding($1.definedTrophies) }
+        let earned = trophyTitles.reduce(PlayStationTrophyCounts.zero) { $0.adding($1.earnedTrophies) }
+        return PlayStationTrophyUpdate(
+            titleID: titleID,
+            earned: earned.total,
+            defined: defined.total,
+            platinum: earned.platinum,
+            syncedAt: .now
+        )
+    }
+
+    func loadTrophySummary(accessToken: String) async throws -> PlayStationTrophySummary {
+        try await authorizedGET(
+            "https://m.np.playstation.com/api/trophy/v1/users/me/trophySummary",
+            accessToken: accessToken,
+            stage: "读取 PSN 奖杯统计"
         )
     }
 
@@ -143,9 +129,13 @@ actor PlayStationAPIClient {
         guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
             let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             let error = body?["error"] as? [String: Any]
+            let errorCode = error?["code"] as? String ?? body?["error"] as? String
             let detail = error?["message"] as? String ?? body?["error_description"] as? String
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             logger.error("\(stage, privacy: .public) failed with HTTP \(code)")
+            if code == 401 || code == 403 || ["invalid_grant", "invalid_token"].contains(errorCode ?? "") {
+                throw PlayStationSyncError.authenticationExpired
+            }
             throw PlayStationSyncError.http(code, detail.map { "\(stage)：\($0)" } ?? stage)
         }
         do {
@@ -187,70 +177,42 @@ actor PlayStationAPIClient {
         return allTitles
     }
 
-    private func loadTrophiesForTitles(
-        titleIDs: [String],
-        accessToken: String
-    ) async throws -> [String: PlayStationMappedTrophies] {
-        var result: [String: PlayStationMappedTrophies] = [:]
-        var skipped = 0
-
-        for (index, titleID) in titleIDs.enumerated() {
-            var components = URLComponents(string: "https://m.np.playstation.com/api/trophy/v1/users/me/titles/trophyTitles")!
-            components.queryItems = [
-                URLQueryItem(name: "npTitleIds", value: titleID),
-            ]
-            do {
-                let response: PlayStationTrophyTitlesForIDsResponse = try await authorizedGET(
-                    components.url!.absoluteString,
-                    accessToken: accessToken,
-                    stage: "按游戏 ID 读取奖杯（\(index + 1)/\(titleIDs.count)）"
-                )
-                for title in response.titles {
-                    let defined = title.trophyTitles.reduce(PlayStationTrophyCounts.zero) { $0.adding($1.definedTrophies) }
-                    let earned = title.trophyTitles.reduce(PlayStationTrophyCounts.zero) { $0.adding($1.earnedTrophies) }
-                    result[title.npTitleID] = PlayStationMappedTrophies(
-                        defined: defined.total,
-                        earned: earned.total,
-                        platinum: earned.platinum,
-                        syncedAt: .now
-                    )
-                }
-            } catch PlayStationSyncError.http(let code, _) where code == 400 || code == 404 {
-                skipped += 1
-                logger.info("No ID-based trophy set for title \(titleID, privacy: .public)")
-            }
-        }
-        logger.info("Mapped trophies by title ID for \(result.count) games; skipped \(skipped)")
-        return result
-    }
-
     private func formData(_ values: [String: String]) -> Data {
         var components = URLComponents()
         components.queryItems = values.map { URLQueryItem(name: $0.key, value: $0.value) }
         return Data((components.percentEncodedQuery ?? "").utf8)
     }
 
-    private func normalize(
-        _ titles: [PlayStationTitle],
-        trophyByTitleID: [String: PlayStationMappedTrophies]
-    ) -> [SyncedGame] {
+    private func normalizeGames(_ titles: [PlayStationTitle]) -> [SyncedGame] {
         return titles.map { item in
-            let trophy = trophyByTitleID[item.titleID]
             return SyncedGame(
-                applicationID: "ps:\(item.titleID)",
+                titleID: item.titleID,
                 platform: .playStation,
                 title: item.localizedName ?? item.name,
                 totalMinutes: Self.minutes(from: item.playDuration),
                 imageURL: item.localizedImageURL ?? item.imageURL ?? "",
                 firstPlayedAt: Self.parseDate(item.firstPlayedDateTime),
                 lastPlayedAt: Self.parseDate(item.lastPlayedDateTime),
-                weeklyMinutes: Array(repeating: 0, count: 7),
-                trophiesEarned: trophy?.earned ?? 0,
-                trophiesDefined: trophy?.defined ?? 0,
-                platinumTrophiesEarned: trophy?.platinum ?? 0,
-                trophiesSyncedAt: trophy?.syncedAt
+                weeklyMinutes: Array(repeating: 0, count: 7)
             )
         }
+    }
+
+    static func accountID(from accessToken: String) throws -> String {
+        let segments = accessToken.split(separator: ".", omittingEmptySubsequences: false)
+        guard segments.count >= 2 else { throw PlayStationSyncError.missingAccountIdentity }
+        var payload = String(segments[1]).replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
+        guard let data = Data(base64Encoded: payload),
+              let claims = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw PlayStationSyncError.missingAccountIdentity
+        }
+        for key in ["sub", "account_id", "accountId", "user_id"] {
+            if let value = claims[key] as? String, !value.isEmpty { return value }
+            if let value = claims[key] as? NSNumber { return value.stringValue }
+        }
+        throw PlayStationSyncError.missingAccountIdentity
     }
 
     private static func minutes(from duration: String) -> Int {
@@ -284,10 +246,24 @@ private final class RedirectBlocker: NSObject, URLSessionTaskDelegate, @unchecke
     }
 }
 
-struct PlayStationSyncPayload: Sendable {
+struct PlayStationGamesPayload: Sendable {
+    let accountID: String
     let accountName: String
     let games: [SyncedGame]
-    let trophies: PlayStationTrophySummary
+    let titles: [PlayStationTitleIdentity]
+}
+
+struct PlayStationTitleIdentity: Sendable {
+    let titleID: String
+    let lastPlayedAt: Date?
+}
+
+struct PlayStationTrophyUpdate: Sendable {
+    let titleID: String
+    let earned: Int
+    let defined: Int
+    let platinum: Int
+    let syncedAt: Date
 }
 
 struct PlayStationTrophySummary: Codable, Sendable {
@@ -398,17 +374,6 @@ private struct PlayStationTrophyTitle: Decodable {
     let earnedTrophies: PlayStationTrophyCounts
 }
 
-private struct PlayStationMappedTrophies: Sendable {
-    let defined: Int
-    let earned: Int
-    let platinum: Int
-    let syncedAt: Date
-
-    static func empty(syncedAt: Date) -> PlayStationMappedTrophies {
-        PlayStationMappedTrophies(defined: 0, earned: 0, platinum: 0, syncedAt: syncedAt)
-    }
-}
-
 struct PlayStationTrophyCacheEntry: Sendable {
     let earned: Int
     let defined: Int
@@ -438,6 +403,8 @@ private struct PlayStationTitle: Decodable {
 
 enum PlayStationSyncError: LocalizedError {
     case invalidNPSSO
+    case authenticationExpired
+    case missingAccountIdentity
     case http(Int, String?)
     case decode(String)
 
@@ -445,6 +412,10 @@ enum PlayStationSyncError: LocalizedError {
         switch self {
         case .invalidNPSSO:
             "未读取到 PlayStation 登录状态，请确认已在页面中登录后重试。"
+        case .authenticationExpired:
+            "PlayStation 登录已过期，请重新连接。"
+        case .missingAccountIdentity:
+            "无法识别 PlayStation 账号，请重新登录后再试。"
         case .http(401, _):
             "PlayStation 登录已过期，请重新连接。"
         case .http(let code, let message):
