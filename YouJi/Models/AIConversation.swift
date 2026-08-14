@@ -10,17 +10,20 @@ final class AIConversation {
     var titleGeneratedAt: Date?
     var messagesData: Data
     var gameContextData: Data
+    var accountScopeKey: String = ""
 
     init(
         id: UUID = UUID(),
         title: String = "新对话",
         createdAt: Date = .now,
+        accountScopeKey: String = "",
         games: [AIAnalysisGame]
     ) {
         self.id = id
         self.title = title
         self.createdAt = createdAt
         self.updatedAt = createdAt
+        self.accountScopeKey = accountScopeKey
         self.messagesData = Self.encode([AIChatMessage]())
         self.gameContextData = Self.encode(games)
     }
@@ -34,7 +37,8 @@ final class AIConversation {
     }
 
     var games: [AIAnalysisGame] {
-        Self.decode([AIAnalysisGame].self, from: gameContextData) ?? []
+        get { Self.decode([AIAnalysisGame].self, from: gameContextData) ?? [] }
+        set { gameContextData = Self.encode(newValue) }
     }
 
     var preview: String {

@@ -25,8 +25,7 @@ struct CachedCoverImage: View {
         }
         .task(id: urlString) {
             image = nil
-            guard let data = try? await CoverImageStore.shared.data(for: urlString) else { return }
-            image = UIImage(data: data)
+            image = try? await CoverImageStore.shared.image(for: urlString)
         }
     }
 }

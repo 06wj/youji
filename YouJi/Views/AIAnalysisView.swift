@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 import UIKit
 
@@ -17,7 +18,10 @@ private enum ExportPlatform: String, CaseIterable {
 
 struct AIAnalysisView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \AIProfileResult.generatedAt, order: .reverse) private var allProfiles: [AIProfileResult]
     let games: [GameRecord]
+    let accountScopeKey: String
 
     @State private var platform: ExportPlatform = .all
     @State private var minimumHours = 1
@@ -29,6 +33,7 @@ struct AIAnalysisView: View {
 	@State private var analysisText = ""
 	@State private var analysisError: String?
 	@State private var copiedAnalysis = false
+    @State private var showProfileHistory = false
 
     private let hourPresets = [1, 2, 10, 50]
 
@@ -48,7 +53,6 @@ struct AIAnalysisView: View {
     }
 
     private var filteredMinutes: Int { filteredGames.reduce(0) { $0 + $1.totalMinutes } }
-
 	private var analysisGames: [AIAnalysisGame] {
 		filteredGames.map { game in
 			AIAnalysisGame(
@@ -89,8 +93,11 @@ struct AIAnalysisView: View {
 				SettingsView()
 			}
 			.sheet(isPresented: $showChat) {
-				AIChatListView(games: games)
+				AIChatListView(games: games, accountScopeKey: accountScopeKey)
 			}
+            .sheet(isPresented: $showProfileHistory) {
+                AIProfileHistoryView(accountScopeKey: accountScopeKey)
+            }
 			.alert("AI 分析失败", isPresented: Binding(
 				get: { analysisError != nil },
 				set: { if !$0 { analysisError = nil } }
@@ -139,6 +146,17 @@ struct AIAnalysisView: View {
 			.disabled(!hasChatGames)
 			.opacity(hasChatGames ? 1 : 0.4)
 			.accessibilityLabel(hasChatGames ? "打开游戏聊天" : "没有可用于聊天的游戏")
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if allProfiles.contains(where: { $0.accountScopeKey == accountScopeKey }) {
+                Button { showProfileHistory = true } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.caption.bold()).foregroundStyle(YJColor.purple)
+                        .padding(7).background(.white, in: Circle())
+                }
+                .offset(y: 15)
+                .accessibilityLabel("查看历史人格")
+            }
         }
     }
 
@@ -224,6 +242,9 @@ struct AIAnalysisView: View {
 						Label(isAnalyzing ? "分析中" : "重新生成", systemImage: "arrow.clockwise")
 					}
 					.disabled(isAnalyzing)
+                    ShareLink(item: analysisText) {
+                        Label("分享", systemImage: "square.and.arrow.up")
+                    }
 				}
 				.font(.caption.bold()).buttonStyle(.bordered).tint(YJColor.ink)
 			}
@@ -312,7 +333,17 @@ struct AIAnalysisView: View {
 		analysisError = nil
 		Task {
 			do {
-				analysisText = try await AIAnalysisClient().analyze(games: payload, apiKey: apiKey, model: model)
+				let result = try await AIAnalysisClient.shared.analyze(games: payload, apiKey: apiKey, model: model)
+                analysisText = result
+                modelContext.insert(AIProfileResult(
+                    accountScopeKey: accountScopeKey,
+                    platformFilter: platform.rawValue,
+                    minimumHours: minimumHours,
+                    text: result,
+                    gameCount: payload.count,
+                    totalMinutes: payload.reduce(0) { $0 + $1.totalMinutes }
+                ))
+                try? modelContext.save()
 			} catch is CancellationError {
 				// Leaving the view cancels work without presenting an error.
 			} catch {
@@ -329,11 +360,15 @@ struct AIAnalysisView: View {
 	}
 
     private var preview: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let previewGames = filteredGames
+        let previewMinutes = previewGames.reduce(0) { $0 + $1.totalMinutes }
+        let lastGameID = previewGames.last?.applicationID
+
+        return VStack(alignment: .leading, spacing: 12) {
 			HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
 					Text("分析依据").font(.title3.bold())
-					Text("\(filteredGames.count) 款 · \(format(minutes: filteredMinutes)) · 按时长排序")
+					Text("\(previewGames.count) 款 · \(format(minutes: previewMinutes)) · 按时长排序")
 						.font(.caption).foregroundStyle(YJColor.muted)
                 }
                 Spacer(minLength: 0)
@@ -344,10 +379,10 @@ struct AIAnalysisView: View {
 				.buttonStyle(.bordered)
 				.tint(YJColor.ink)
 				.controlSize(.small)
-				.disabled(filteredGames.isEmpty)
+				.disabled(previewGames.isEmpty)
             }
 
-            if filteredGames.isEmpty {
+            if previewGames.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "line.3.horizontal.decrease.circle").font(.largeTitle).foregroundStyle(YJColor.purple)
                     Text("没有符合条件的游戏").font(.headline)
@@ -358,10 +393,10 @@ struct AIAnalysisView: View {
 				.background(YJColor.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
 				.overlay(RoundedRectangle(cornerRadius: 20).stroke(YJColor.line))
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(filteredGames.enumerated()), id: \.element.applicationID) { index, game in
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(previewGames.enumerated()), id: \.element.applicationID) { index, game in
                         exportRow(index: index, game: game)
-                        if index < filteredGames.count - 1 { Divider() }
+                        if game.applicationID != lastGameID { Divider() }
                     }
                 }
 				.padding(.horizontal, 16)

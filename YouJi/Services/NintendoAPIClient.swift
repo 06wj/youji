@@ -7,6 +7,7 @@ actor NintendoAPIClient {
     private let storeBaseURL = URL(string: "https://app-api.znej.nintendo.com/api/v2.0")!
     private let sessionExchangeUserAgent = "NASDKAPI; Android"
     private let storeUserAgent = "com.nintendo.znej/3.2.0 (iOS/26.0.1)"
+    private let storeLocale = "en-US"
 
     init(session: URLSession = .shared) { self.session = session }
 
@@ -40,7 +41,13 @@ actor NintendoAPIClient {
             accessToken: token.accessToken,
             stage: "读取 Switch 游戏记录"
         )
-        return try await NintendoSyncPayload(user: user, games: normalize(history: history))
+        let resolvedUser = try await user
+        let normalized = try await Self.normalize(history: history)
+        return NintendoSyncPayload(
+            user: resolvedUser,
+            games: normalized.games,
+            dailyActivities: normalized.dailyActivities
+        )
     }
 
     private func accountToken(sessionToken: String) async throws -> AccountTokenResponse {
@@ -62,8 +69,7 @@ actor NintendoAPIClient {
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(storeUserAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("zh-CN", forHTTPHeaderField: "gentry-locale")
-        request.setValue("zh-CN,zh-Hans;q=0.95,zh-TW;q=0.85,en;q=0.6", forHTTPHeaderField: "Accept-Language")
+        request.setValue(storeLocale, forHTTPHeaderField: "gentry-locale")
         return try await send(request, stage: stage)
     }
 
@@ -76,7 +82,11 @@ actor NintendoAPIClient {
                 ?? body?["error_description"] as? String
                 ?? body?["message"] as? String
                 ?? body?["error"] as? String
-            let message = serverMessage.map { "\(stage)：\($0)" } ?? stage
+            let serviceCode = body?["code"].map(String.init(describing:))
+            let detail = [serverMessage, serviceCode.map { "错误码 \($0)" }]
+                .compactMap { $0 }
+                .joined(separator: "；")
+            let message = detail.isEmpty ? stage : "\(stage)：\(detail)"
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             if code == 401 || code == 403 || ["invalid_grant", "invalid_token"].contains(errorCode) {
                 throw NintendoSyncError.authenticationExpired(message)
@@ -93,23 +103,32 @@ actor NintendoAPIClient {
         return Data((components.percentEncodedQuery ?? "").utf8)
     }
 
-    private func normalize(history: StorePlayHistoryResponse) -> [SyncedGame] {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: .now)
+    static func normalize(
+        history: StorePlayHistoryResponse,
+        now: Date = .now,
+        calendar: Calendar = .current
+    ) -> NintendoNormalizedHistory {
+        let today = calendar.startOfDay(for: now)
         var weeklyByTitle: [String: [Int]] = [:]
+        var dailyByTitle: [String: [Date: Int]] = [:]
 
         for day in history.recentPlayHistories {
             guard let date = Self.parsePlayedDay(day.playedDate) else { continue }
-            let offset = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: today).day ?? 99
+            let playedDay = calendar.startOfDay(for: date)
+            let offset = calendar.dateComponents([.day], from: playedDay, to: today).day ?? 99
             guard (0...6).contains(offset) else { continue }
             for item in day.dailyPlayHistories {
                 var week = weeklyByTitle[item.titleID] ?? Array(repeating: 0, count: 7)
                 week[6 - offset] += item.totalPlayedMinutes
                 weeklyByTitle[item.titleID] = week
+
+                var titleDays = dailyByTitle[item.titleID] ?? [:]
+                titleDays[playedDay, default: 0] += item.totalPlayedMinutes
+                dailyByTitle[item.titleID] = titleDays
             }
         }
 
-        return history.playHistories.map { item in
+        let games = history.playHistories.map { item in
             SyncedGame(
                 titleID: item.titleID,
                 platform: .switchConsole,
@@ -121,6 +140,16 @@ actor NintendoAPIClient {
                 weeklyMinutes: weeklyByTitle[item.titleID] ?? Array(repeating: 0, count: 7)
             )
         }
+        let dailyActivities: [SyncedDailyActivity] = dailyByTitle.flatMap { titleEntry in
+            let titleID = titleEntry.key
+            return titleEntry.value.compactMap { dayEntry -> SyncedDailyActivity? in
+                let day = dayEntry.key
+                let minutes = dayEntry.value
+                guard minutes > 0 else { return nil }
+                return SyncedDailyActivity(titleID: titleID, day: day, totalMinutes: minutes)
+            }
+        }
+        return NintendoNormalizedHistory(games: games, dailyActivities: dailyActivities)
     }
 
     static func parseDate(_ value: String) -> Date? {
@@ -151,6 +180,12 @@ actor NintendoAPIClient {
 struct NintendoSyncPayload: Sendable {
     let user: NintendoUser
     let games: [SyncedGame]
+    let dailyActivities: [SyncedDailyActivity]
+}
+
+struct NintendoNormalizedHistory: Sendable {
+    let games: [SyncedGame]
+    let dailyActivities: [SyncedDailyActivity]
 }
 
 struct SessionTokenResponse: Decodable {
@@ -166,12 +201,12 @@ struct AccountTokenResponse: Decodable {
 
 struct NintendoUser: Decodable, Sendable { let id: String; let nickname: String }
 
-struct StorePlayHistoryResponse: Decodable {
+struct StorePlayHistoryResponse: Decodable, Sendable {
     let playHistories: [StorePlayHistory]
     let recentPlayHistories: [StoreRecentDay]
 }
 
-struct StorePlayHistory: Decodable {
+struct StorePlayHistory: Decodable, Sendable {
     let titleID: String
     let titleName: String
     let imageURL: String
@@ -183,12 +218,12 @@ struct StorePlayHistory: Decodable {
     }
 }
 
-struct StoreRecentDay: Decodable {
+struct StoreRecentDay: Decodable, Sendable {
     let playedDate: String
     let dailyPlayHistories: [StoreRecentTitle]
 }
 
-struct StoreRecentTitle: Decodable {
+struct StoreRecentTitle: Decodable, Sendable {
     let titleID: String
     let totalPlayedMinutes: Int
     enum CodingKeys: String, CodingKey { case titleID = "titleId", totalPlayedMinutes }

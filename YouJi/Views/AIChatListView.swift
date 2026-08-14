@@ -7,9 +7,14 @@ struct AIChatListView: View {
     @Query(sort: \AIConversation.updatedAt, order: .reverse) private var conversations: [AIConversation]
 
     let games: [GameRecord]
+    let accountScopeKey: String
 
     @State private var path: [UUID] = []
     @State private var conversationToDelete: AIConversation?
+
+    private var scopedConversations: [AIConversation] {
+        conversations.filter { $0.accountScopeKey == accountScopeKey }
+    }
 
     private var chatGames: [AIAnalysisGame] {
         games
@@ -35,7 +40,7 @@ struct AIChatListView: View {
     var body: some View {
         NavigationStack(path: $path) {
             Group {
-                if conversations.isEmpty {
+                if scopedConversations.isEmpty {
                     emptyState
                 } else {
                     conversationList
@@ -57,10 +62,17 @@ struct AIChatListView: View {
                 }
             }
             .navigationDestination(for: UUID.self) { id in
-                if let conversation = conversations.first(where: { $0.id == id }) {
+                if let conversation = scopedConversations.first(where: { $0.id == id }) {
                     AIChatView(conversation: conversation)
                 } else {
                     ContentUnavailableView("对话不存在", systemImage: "message.slash")
+                }
+            }
+            .task {
+                let legacy = conversations.filter { $0.accountScopeKey.isEmpty }
+                if !legacy.isEmpty, !accountScopeKey.isEmpty {
+                    legacy.forEach { $0.accountScopeKey = accountScopeKey }
+                    try? modelContext.save()
                 }
             }
             .confirmationDialog(
@@ -81,7 +93,7 @@ struct AIChatListView: View {
 
     private var conversationList: some View {
         List {
-            ForEach(conversations) { conversation in
+            ForEach(scopedConversations) { conversation in
                 NavigationLink(value: conversation.id) {
                     conversationRow(conversation)
                 }
@@ -142,7 +154,7 @@ struct AIChatListView: View {
 
     private func createConversation() {
         guard !chatGames.isEmpty else { return }
-        let conversation = AIConversation(games: chatGames)
+        let conversation = AIConversation(accountScopeKey: accountScopeKey, games: chatGames)
         modelContext.insert(conversation)
         try? modelContext.save()
         path.append(conversation.id)

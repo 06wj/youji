@@ -24,6 +24,7 @@ The interface is Chinese-first. Prefer an official Chinese game title when a pla
 | --- | --- |
 | `YouJi/Models/GameRecord.swift` | SwiftData model, platform identity, library visibility rule |
 | `YouJi/Models/AIConversation.swift` | Persistent AI conversation, messages, and frozen game context |
+| `YouJi/Services/ProductDataService.swift` | Versioned backup/restore, CSV, diagnostics, snapshot insights, reminders, and profile share cards |
 | `YouJi/Services/SyncCoordinator.swift` | Only coordinator between views, platform clients, and persistence |
 | `YouJi/Services/PlayStationAPIClient.swift` | PSN authorization, game pagination, localization, trophy fetching and caching |
 | `YouJi/Services/NintendoOAuth.swift` | Nintendo PKCE authorization request and callback parsing |
@@ -38,6 +39,7 @@ The interface is Chinese-first. Prefer an official Chinese game title when a pla
 | `YouJi/Views/AIChatListView.swift` | Persistent conversation list, creation, continuation, and deletion |
 | `YouJi/Views/AIChatView.swift` | Multi-turn conversation view and automatic title generation |
 | `YouJi/Views/SettingsView.swift` | User-owned AI API key and model configuration |
+| `YouJi/Views/ProductViews.swift` | Game details, account archives, insights, plans, AI profile history, data management, and privacy UI |
 | `YouJi/Views/Connect*View.swift` | Official platform web authorization UI |
 | `YouJi/Design/Theme.swift` | Shared colors and visual styles |
 | `YouJiTests/` | Account identity, date parsing, visibility, and snapshot regression tests |
