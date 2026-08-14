@@ -29,6 +29,10 @@
 		A10000000000000000000017 /* Services/AIPrompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* Services/AIPrompts.swift */; };
 		A10000000000000000000018 /* Models/AIConversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* Models/AIConversation.swift */; };
 		A10000000000000000000019 /* Views/AIChatListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* Views/AIChatListView.swift */; };
+		A1000000000000000000001A /* Views/PlayCalendarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001A /* Views/PlayCalendarView.swift */; };
+		A1000000000000000000001B /* Services/ProductDataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001B /* Services/ProductDataService.swift */; };
+		A1000000000000000000001C /* Views/ProductViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001C /* Views/ProductViews.swift */; };
+		A1000000000000000000001D /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* PrivacyInfo.xcprivacy */; };
 		A20000000000000000000001 /* YouJiDataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* YouJiDataTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -67,6 +71,10 @@
 		B10000000000000000000017 /* Services/AIPrompts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/AIPrompts.swift; sourceTree = "<group>"; };
 		B10000000000000000000018 /* Models/AIConversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/AIConversation.swift; sourceTree = "<group>"; };
 		B10000000000000000000019 /* Views/AIChatListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/AIChatListView.swift; sourceTree = "<group>"; };
+		B1000000000000000000001A /* Views/PlayCalendarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/PlayCalendarView.swift; sourceTree = "<group>"; };
+		B1000000000000000000001B /* Services/ProductDataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/ProductDataService.swift; sourceTree = "<group>"; };
+		B1000000000000000000001C /* Views/ProductViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/ProductViews.swift; sourceTree = "<group>"; };
+		B1000000000000000000001D /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		B20000000000000000000001 /* YouJiDataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouJiDataTests.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* YouJiTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YouJiTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -123,6 +131,10 @@
 				B10000000000000000000017 /* Services/AIPrompts.swift */,
 				B10000000000000000000018 /* Models/AIConversation.swift */,
 				B10000000000000000000019 /* Views/AIChatListView.swift */,
+				B1000000000000000000001A /* Views/PlayCalendarView.swift */,
+				B1000000000000000000001B /* Services/ProductDataService.swift */,
+				B1000000000000000000001C /* Views/ProductViews.swift */,
+				B1000000000000000000001D /* PrivacyInfo.xcprivacy */,
 				B1000000000000000000000B /* Info.plist */,
 			);
 			path = YouJi;
@@ -228,6 +240,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000000000000000000000F /* Assets.xcassets in Resources */,
+				A1000000000000000000001D /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -266,6 +279,9 @@
 				A10000000000000000000017 /* Services/AIPrompts.swift in Sources */,
 				A10000000000000000000018 /* Models/AIConversation.swift in Sources */,
 				A10000000000000000000019 /* Views/AIChatListView.swift in Sources */,
+				A1000000000000000000001A /* Views/PlayCalendarView.swift in Sources */,
+				A1000000000000000000001B /* Services/ProductDataService.swift in Sources */,
+				A1000000000000000000001C /* Views/ProductViews.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

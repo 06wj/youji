@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import UIKit
 
 struct AIChatView: View {
     @Environment(\.modelContext) private var modelContext
@@ -15,6 +16,8 @@ struct AIChatView: View {
     @State private var requestTask: Task<Void, Never>?
     @State private var titleTask: Task<Void, Never>?
     @State private var activeRequestID: UUID?
+    @State private var canRetry = false
+    @State private var planSaved = false
     @FocusState private var composerFocused: Bool
 
     init(conversation: AIConversation) {
@@ -48,6 +51,7 @@ struct AIChatView: View {
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
         )) {
+            if canRetry { Button("重试") { retryLastResponse() } }
             Button("知道了", role: .cancel) {}
         } message: {
             Text(errorMessage ?? "未知错误")
@@ -61,12 +65,26 @@ struct AIChatView: View {
                 persistMessages()
             }
         }
+        .overlay(alignment: .top) {
+            if planSaved {
+                Text("已保存到待玩与重温清单")
+                    .font(.caption.bold()).foregroundStyle(.white)
+                    .padding(.horizontal, 13).padding(.vertical, 8)
+                    .background(YJColor.ink, in: Capsule())
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
     }
 
     private var conversationView: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 14) {
+                    Text("这段对话使用创建时冻结的 \(conversation.games.count) 款游戏；同步后新建对话可使用最新记录。")
+                        .font(.caption2).foregroundStyle(YJColor.muted)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 22)
                     if messages.isEmpty && !isSending {
                         emptyConversation
                     }
@@ -175,6 +193,16 @@ struct AIChatView: View {
                             .stroke(YJColor.line)
                     }
                 }
+                .contextMenu {
+                    Button { UIPasteboard.general.string = message.content } label: {
+                        Label("复制", systemImage: "doc.on.doc")
+                    }
+                    if message.role == .assistant {
+                        Button { saveAsPlan(message) } label: {
+                            Label("保存为待玩灵感", systemImage: "bookmark")
+                        }
+                    }
+                }
 
             if message.role == .assistant { Spacer(minLength: 38) }
         }
@@ -192,6 +220,15 @@ struct AIChatView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(YJColor.ink)
+            }
+            if isSending {
+                Button("停止生成") {
+                    requestTask?.cancel()
+                    activeRequestID = nil
+                    isSending = false
+                    canRetry = true
+                }
+                .font(.caption.bold()).foregroundStyle(YJColor.coral)
             }
 
             HStack(alignment: .bottom, spacing: 10) {
@@ -254,8 +291,20 @@ struct AIChatView: View {
         draft = ""
         composerFocused = false
         isSending = true
+        canRetry = false
         errorMessage = nil
+        requestReply(requestMessages: requestMessages)
+    }
 
+    private func retryLastResponse() {
+        guard !isSending, messages.last?.role == .user else { return }
+        errorMessage = nil
+        isSending = true
+        canRetry = false
+        requestReply(requestMessages: messages)
+    }
+
+    private func requestReply(requestMessages: [AIChatMessage]) {
         let apiKey = AISettingsStore.apiKey
         let model = AISettingsStore.modelName
         let requestID = UUID()
@@ -269,7 +318,7 @@ struct AIChatView: View {
                 }
             }
             do {
-                let answer = try await AIAnalysisClient().chat(
+                let answer = try await AIAnalysisClient.shared.chat(
                     games: conversation.games,
                     messages: requestMessages,
                     apiKey: apiKey,
@@ -284,9 +333,22 @@ struct AIChatView: View {
                 // Leaving the view cancels the reply without losing the user's message.
             } catch {
                 guard activeRequestID == requestID else { return }
+                canRetry = true
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func saveAsPlan(_ message: AIChatMessage) {
+        let firstLine = message.content.split(whereSeparator: \.isNewline).first.map(String.init) ?? conversation.title
+        modelContext.insert(SavedGamePlan(
+            accountScopeKey: conversation.accountScopeKey,
+            title: String(firstLine.prefix(28)),
+            note: message.content
+        ))
+        try? modelContext.save()
+        withAnimation { planSaved = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { withAnimation { planSaved = false } }
     }
 
     private func persistMessages() {
@@ -308,7 +370,7 @@ struct AIChatView: View {
                 titleTask = nil
             }
             do {
-                let title = try await AIAnalysisClient().conversationTitle(
+                let title = try await AIAnalysisClient.shared.conversationTitle(
                     messages: titleMessages,
                     apiKey: apiKey,
                     model: model

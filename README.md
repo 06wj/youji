@@ -58,8 +58,13 @@ Chats are saved locally and organized into easy-to-find topics. Continue an exis
 - **One cross-platform library:** See PlayStation and Nintendo Switch games, play time, totals, and recent activity in one place.
 - **Trophies and platinums:** Revisit PlayStation trophy progress, completion rates, and every platinum you worked for.
 - **Recent activity:** Understand your Nintendo Switch rhythm through a focused seven-day view.
+- **Play calendar:** Keep exact Switch play dates and per-game minutes on device after each sync, even after they leave Nintendo's seven-day window.
+- **Long-term trends:** Turn synchronization snapshots into seven-day, 30-day, and annual changes in play time and trophies.
+- **Searchable game archive:** Search by title or note, open a game timeline, and add favorites, visibility, status, and private notes.
+- **Account-aware history:** See which account is connected, inspect per-platform sync receipts, and reopen disconnected local archives without mixing accounts.
 - **A cleaner collection:** Keep meaningful games in focus while short trials and long-forgotten launches stay out of the way.
-- **Built for the long term:** Sync when you choose, keep your covers and history on device, and let the library grow with you.
+- **Portable local data:** Export a complete JSON backup or CSV library, restore by merging, and remove an account archive or all local content when you choose.
+- **Built for the long term:** Sync when you choose, optionally enable a weekly local reminder, keep your covers and history on device, and let the library grow with you.
 
 ## Get started in three steps
 
@@ -68,6 +73,7 @@ Chats are saved locally and organized into easy-to-find topics. Continue an exis
 3. Open Game Brain to generate a profile or talk through what to play next.
 
 AI features use your own model configuration, which you can add in Settings the first time you use them.
+The default configuration uses Celitech's OpenAI-compatible endpoint. You can replace it with another HTTPS Chat Completions-compatible endpoint and test the connection in Settings.
 
 ## Your data stays under your control
 
@@ -75,6 +81,10 @@ AI features use your own model configuration, which you can add in Settings the 
 - YouJi contacts platform or AI services only after an action you initiate.
 - Account credentials and your AI API key are protected by the system and never become part of your game library or this repository.
 - The AI receives only the information needed for the analysis or conversation, never your platform credentials.
+- AI conversations are separated by the local account scope, personality results can be revisited and shared as image cards, and useful replies can be saved to a local play/replay list.
+- Complete backups never include platform credentials or the AI API key.
+
+Read the full [Privacy Policy](docs/PRIVACY_POLICY.md).
 
 ---
 
@@ -121,9 +131,9 @@ Cover images are cached under `Application Support/YouJi/Covers`. Platform sessi
 YouJi/
 ├── Assets.xcassets/       # App icon and brand assets
 ├── Design/                # Theme and shared view styling
-├── Models/                # SwiftData game, snapshot, and conversation models
-├── Services/              # Platform sync, AI, Keychain, and cover caching
-├── Views/                 # Dashboard, sign-in, Game Brain, chat, and settings
+├── Models/                # SwiftData game, snapshot, conversation, profile, and play-plan models
+├── Services/              # Platform sync, AI, Keychain, backup, trends, reminders, and cover caching
+├── Views/                 # Dashboard, game archive, insights, account/data management, Game Brain, and settings
 └── YouJiApp.swift         # App entry point
 
 docs/

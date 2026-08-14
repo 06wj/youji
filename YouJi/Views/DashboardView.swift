@@ -32,6 +32,13 @@ private enum GameSort: String, CaseIterable {
     }
 }
 
+private enum LibraryScope: String, CaseIterable {
+    case all = "全部"
+    case favorites = "收藏"
+    case active = "进行中"
+    case hidden = "已隐藏"
+}
+
 struct DashboardView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \GameRecord.lastPlayedAt, order: .reverse) private var games: [GameRecord]
@@ -42,32 +49,71 @@ struct DashboardView: View {
     @State private var gameSort: GameSort = .playTime
 	@State private var showAIAnalysis = false
 	@State private var showSettings = false
+    @State private var showAccountCenter = false
+    @State private var showInsights = false
+    @State private var showPlans = false
+    @State private var selectedArchive: AccountArchiveSelection?
+    @State private var selectedGame: GameRecord?
+    @State private var searchText = ""
+    @State private var libraryScope: LibraryScope = .all
     @State private var syncingPlatform: GamePlatform?
 
-    private var currentAccountGames: [GameRecord] { games.filter(sync.owns) }
-    private var displayableGames: [GameRecord] { currentAccountGames.filter { !$0.shouldHideFromLibrary } }
+    private var currentAccountGames: [GameRecord] {
+        if let selectedArchive {
+            return games.filter { $0.platform == selectedArchive.platform && $0.accountID == selectedArchive.accountID }
+        }
+        return AccountScope.visibleLibraryGames(
+            games,
+            playStationAccountID: sync.currentPlayStationAccountID,
+            nintendoAccountID: sync.currentNintendoAccountID
+        )
+    }
+    private var summaryGames: [GameRecord] {
+        currentAccountGames.filter { !$0.shouldHideFromLibrary }
+    }
+
+    private var libraryScopedGames: [GameRecord] {
+        switch libraryScope {
+        case .all:
+            return summaryGames
+        case .favorites:
+            return currentAccountGames.filter { $0.isFavorite && !$0.isManuallyHidden }
+        case .active:
+            return currentAccountGames.filter {
+                ($0.playStatus == .playing || $0.playStatus == .replay) && !$0.isManuallyHidden
+            }
+        case .hidden:
+            return currentAccountGames.filter(\.shouldHideFromLibrary)
+        }
+    }
 
     private var visibleGames: [GameRecord] {
         let filtered: [GameRecord]
         if let platform = filter.platform {
-            filtered = displayableGames.filter { $0.platform == platform }
+            filtered = libraryScopedGames.filter { $0.platform == platform }
         } else {
-            filtered = displayableGames
+            filtered = libraryScopedGames
         }
+        let searched = searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? filtered
+            : filtered.filter {
+                $0.title.localizedCaseInsensitiveContains(searchText.trimmingCharacters(in: .whitespacesAndNewlines))
+                    || $0.personalNote.localizedCaseInsensitiveContains(searchText.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
         switch gameSort {
         case .recentlyPlayed:
-            return filtered.sorted {
+            return searched.sorted {
                 ($0.lastPlayedAt ?? .distantPast) > ($1.lastPlayedAt ?? .distantPast)
             }
         case .playTime:
-            return filtered.sorted {
+            return searched.sorted {
                 if $0.totalMinutes == $1.totalMinutes {
                     return ($0.lastPlayedAt ?? .distantPast) > ($1.lastPlayedAt ?? .distantPast)
                 }
                 return $0.totalMinutes > $1.totalMinutes
             }
         case .trophies:
-            return filtered.sorted {
+            return searched.sorted {
                 let lhsPlatinum = $0.platinumTrophiesEarned > 0
                 let rhsPlatinum = $1.platinumTrophiesEarned > 0
                 if lhsPlatinum != rhsPlatinum {
@@ -87,21 +133,33 @@ struct DashboardView: View {
     }
 
     private var week: [Int] {
-        visibleGames.reduce(Array(repeating: 0, count: 7)) { result, game in
+        switchGames.reduce(Array(repeating: 0, count: 7)) { result, game in
             zip(result, game.weeklyMinutes).map(+)
         }
     }
 
-    private var playStationGames: [GameRecord] { displayableGames.filter { $0.platform == .playStation } }
-    private var switchGames: [GameRecord] { displayableGames.filter { $0.platform == .switchConsole } }
+    private var playStationGames: [GameRecord] { summaryGames.filter { $0.platform == .playStation } }
+    private var switchGames: [GameRecord] { summaryGames.filter { $0.platform == .switchConsole } }
     private var playStationMinutes: Int { playStationGames.reduce(0) { $0 + $1.totalMinutes } }
     private var switchMinutes: Int { switchGames.reduce(0) { $0 + $1.totalMinutes } }
     private var platinumGameCount: Int { playStationGames.filter { $0.platinumTrophiesEarned > 0 }.count }
     private var latestVisibleGame: GameRecord? {
-        visibleGames.max { ($0.lastPlayedAt ?? .distantPast) < ($1.lastPlayedAt ?? .distantPast) }
+        let platformGames = filter.platform.map { platform in
+            summaryGames.filter { $0.platform == platform }
+        } ?? summaryGames
+        return platformGames.max { ($0.lastPlayedAt ?? .distantPast) < ($1.lastPlayedAt ?? .distantPast) }
     }
     private var switchTopThisWeek: GameRecord? {
         switchGames.max { $0.weeklyMinutes.reduce(0, +) < $1.weeklyMinutes.reduce(0, +) }
+    }
+    private var activeAccountScopeKey: String {
+        if let selectedArchive {
+            return AccountScope.token(platform: selectedArchive.platform, accountID: selectedArchive.accountID)
+        }
+        return sync.currentAccountScopeKey
+    }
+    private var visiblePlayStationTrophies: PlayStationTrophySummary? {
+        selectedArchive == nil ? sync.playStationTrophies : nil
     }
 
     var body: some View {
@@ -110,8 +168,18 @@ struct DashboardView: View {
                 LazyVStack(spacing: 22) {
                     header
                     platformPicker
+                    if selectedArchive != nil { archiveBanner }
                     insightCard
-                    if filter == .playStation, sync.playStationTrophies != nil { trophyCard }
+                    if let receipt = visibleReceipt { syncReceiptCard(receipt) }
+                    if filter != .playStation {
+                        PlayCalendarSection(
+                            accountID: selectedArchive?.platform == .switchConsole
+                                ? selectedArchive?.accountID ?? ""
+                                : (selectedArchive == nil ? sync.currentNintendoAccountID : ""),
+                            games: currentAccountGames
+                        )
+                    }
+                    if filter == .playStation, visiblePlayStationTrophies != nil { trophyCard }
                     library
                     privacyNote
                 }
@@ -127,11 +195,23 @@ struct DashboardView: View {
                 }
             }
 			.sheet(isPresented: $showAIAnalysis) {
-				AIAnalysisView(games: currentAccountGames)
+				AIAnalysisView(games: currentAccountGames, accountScopeKey: activeAccountScopeKey)
             }
 			.sheet(isPresented: $showSettings) {
-				SettingsView()
+				SettingsView(sync: sync)
 			}
+            .sheet(isPresented: $showAccountCenter) {
+                AccountCenterView(sync: sync, games: games, selectedArchive: $selectedArchive)
+            }
+            .sheet(isPresented: $showInsights) {
+                InsightsView(games: currentAccountGames, accountScopeKey: activeAccountScopeKey)
+            }
+            .sheet(isPresented: $showPlans) {
+                SavedPlansView(accountScopeKey: activeAccountScopeKey)
+            }
+            .sheet(item: $selectedGame) { game in
+                GameDetailView(game: game)
+            }
             .confirmationDialog("连接游戏平台", isPresented: $showConnectionOptions, titleVisibility: .visible) {
                 Button(sync.isPlayStationConnected ? "PlayStation 已连接" : "连接 PlayStation") { connectionSheet = .playStation }
                 Button(sync.isNintendoConnected ? "Switch 已连接" : "连接 Nintendo Switch") { connectionSheet = .switchConsole }
@@ -144,6 +224,13 @@ struct DashboardView: View {
                 Button("知道了", role: .cancel) {}
             } message: {
                 Text(sync.errorMessage ?? "未知错误")
+            }
+            .task {
+                sync.backfillNintendoDailyActivities(modelContext: modelContext)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .youJiLocalDataDidReset)) { _ in
+                sync.resetNonCredentialState()
+                selectedArchive = nil
             }
         }
     }
@@ -175,16 +262,71 @@ struct DashboardView: View {
 			}
 			.buttonStyle(.plain)
 			.accessibilityLabel("AI 游戏分析")
-			Button { showSettings = true } label: {
-				Image(systemName: "gearshape.fill")
+			Menu {
+                Button { showAccountCenter = true } label: { Label("账号与同步", systemImage: "person.crop.circle") }
+                Button { showInsights = true } label: { Label("游玩洞察", systemImage: "chart.line.uptrend.xyaxis") }
+                Button { showPlans = true } label: { Label("待玩与重温", systemImage: "bookmark") }
+                Button { showSettings = true } label: { Label("设置", systemImage: "gearshape") }
+            } label: {
+				Image(systemName: "ellipsis")
 					.font(.caption.bold())
 					.foregroundStyle(YJColor.ink)
 					.frame(width: 36, height: 36)
 					.background(Color.white.opacity(0.72), in: Circle())
 					.overlay(Circle().stroke(Color.white.opacity(0.85)))
 			}
-			.buttonStyle(.plain)
+			.accessibilityLabel("更多功能")
         }.padding(.top, 8)
+    }
+
+    private var visibleReceipt: PlatformSyncReceipt? {
+        guard selectedArchive == nil else { return nil }
+        return switch filter {
+        case .playStation: sync.playStationReceipt
+        case .switchConsole: sync.nintendoReceipt
+        case .all:
+            [sync.playStationReceipt, sync.nintendoReceipt]
+                .compactMap { $0 }
+                .max { $0.syncedAt < $1.syncedAt }
+        }
+    }
+
+    private var archiveBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "archivebox.fill").foregroundStyle(YJColor.purple)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("正在查看本地历史档案").font(.caption.bold())
+                if let selectedArchive {
+                    Text("\(selectedArchive.platform.rawValue) · 账号尾号 …\(selectedArchive.accountID.suffix(6))")
+                        .font(.caption2).foregroundStyle(YJColor.muted)
+                }
+            }
+            Spacer()
+            Button("返回当前") { selectedArchive = nil }
+                .font(.caption.bold()).buttonStyle(.bordered)
+        }
+        .padding(13)
+        .background(YJColor.purple.opacity(0.08), in: RoundedRectangle(cornerRadius: 15))
+    }
+
+    private func syncReceiptCard(_ receipt: PlatformSyncReceipt) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: receipt.trophyFailures > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(receipt.trophyFailures > 0 ? YJColor.coral : YJColor.purple)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("上次 \(receipt.platform.shortName) 同步变化").font(.caption.bold())
+                Text("新增 \(receipt.addedGames) 款 · 更新 \(receipt.changedGames) 款 · +\(format(minutes: receipt.addedMinutes))")
+                    .font(.caption2).foregroundStyle(YJColor.muted)
+                if receipt.trophyFailures > 0 {
+                    Text("\(receipt.trophyFailures) 项奖杯数据将在下次同步重试")
+                        .font(.caption2).foregroundStyle(YJColor.coral)
+                }
+            }
+            Spacer()
+            Button("详情") { showAccountCenter = true }.font(.caption.bold())
+        }
+        .padding(14)
+        .youjiCard()
     }
 
     private func platformSyncButton(_ platform: GamePlatform) -> some View {
@@ -303,7 +445,7 @@ struct DashboardView: View {
             HStack(spacing: 18) {
                 heroMiniStat(value: "\(playStationGames.count)", label: "游戏")
                 heroMiniStat(value: "\(platinumGameCount)", label: "白金")
-                heroMiniStat(value: sync.playStationTrophies.map { "\($0.total)" } ?? "—", label: "奖杯")
+                heroMiniStat(value: visiblePlayStationTrophies.map { "\($0.total)" } ?? "—", label: "奖杯")
             }
         }
         .heroCard(colors: [Color(red: 0.02, green: 0.16, blue: 0.43), Color(red: 0.02, green: 0.34, blue: 0.76)])
@@ -390,7 +532,7 @@ struct DashboardView: View {
 
     private var trophyCard: some View {
         Group {
-            if let trophies = sync.playStationTrophies {
+            if let trophies = visiblePlayStationTrophies {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -446,7 +588,10 @@ struct DashboardView: View {
     }
 
     private var library: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let libraryGames = visibleGames
+        let lastGameID = libraryGames.last?.applicationID
+
+        return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .bottom) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("LIBRARY / 游戏库").font(.system(size: 9, weight: .black, design: .monospaced)).tracking(1.2).foregroundStyle(YJColor.muted)
@@ -456,7 +601,7 @@ struct DashboardView: View {
             }
 
             HStack {
-                Text("共 \(visibleGames.count) 款游戏").font(.caption).foregroundStyle(YJColor.muted)
+                Text("共 \(libraryGames.count) 款游戏").font(.caption).foregroundStyle(YJColor.muted)
                 Spacer()
                 Menu {
                     ForEach(GameSort.allCases.filter { filter == .playStation || !$0.isPlayStationOnly }, id: \.self) { option in
@@ -479,13 +624,43 @@ struct DashboardView: View {
                 }
             }
 
-            if visibleGames.isEmpty {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass").foregroundStyle(YJColor.muted)
+                TextField("搜索游戏或私人备注", text: $searchText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain).foregroundStyle(YJColor.muted)
+                        .accessibilityLabel("清除搜索")
+                }
+            }
+            .padding(.horizontal, 13).padding(.vertical, 10)
+            .background(YJColor.card, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(YJColor.line))
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(LibraryScope.allCases, id: \.self) { scope in
+                        Button(scope.rawValue) { libraryScope = scope }
+                            .font(.caption.bold())
+                            .foregroundStyle(libraryScope == scope ? .white : YJColor.ink)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .background(libraryScope == scope ? YJColor.ink : YJColor.card, in: Capsule())
+                            .overlay(Capsule().stroke(YJColor.line))
+                    }
+                }
+            }
+
+            if libraryGames.isEmpty {
                 emptyLibrary
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(visibleGames.enumerated()), id: \.element.applicationID) { index, game in
-                        GameRow(game: game)
-                        if index < visibleGames.count - 1 { Divider() }
+                LazyVStack(spacing: 0) {
+                    ForEach(libraryGames, id: \.applicationID) { game in
+                        Button { selectedGame = game } label: { GameRow(game: game) }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("打开游戏档案")
+                        if game.applicationID != lastGameID { Divider() }
                     }
                 }
                 .padding(.horizontal, 14)
@@ -627,6 +802,9 @@ private struct GameRow: View {
                         .padding(.horizontal, 6).padding(.vertical, 3)
                         .background(game.platform == .playStation ? Color.blue : Color.red, in: Capsule())
                     Text(game.title).font(.subheadline.bold()).lineLimit(1)
+                    if game.isFavorite {
+                        Image(systemName: "heart.fill").font(.caption2).foregroundStyle(YJColor.coral)
+                    }
                 }
                 HStack {
                     Text("\(game.totalMinutes / 60)h \(game.totalMinutes % 60)m").font(.title3.bold())
@@ -667,6 +845,11 @@ private struct GameRow: View {
                             }
                         }.frame(height: 4)
                     }
+                }
+                if game.playStatus != .played {
+                    Text(game.playStatus.rawValue)
+                        .font(.caption2.bold())
+                        .foregroundStyle(YJColor.purple)
                 }
             }
         }.padding(.vertical, 13)

@@ -1,8 +1,10 @@
 import Foundation
 
 actor AIAnalysisClient {
+    static let shared = AIAnalysisClient()
+
     private let session: URLSession
-    private let endpoint = URL(string: "https://api.celitech.com.cn/v1/chat/completions")!
+    private var endpoint: URL { AISettingsStore.endpointURL }
 
     init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -43,6 +45,27 @@ actor AIAnalysisClient {
             throw AIAnalysisError.invalidResponse
         }
         return content
+    }
+
+    func testConnection(apiKey: String, model: String) async throws {
+        guard !apiKey.isEmpty, !model.isEmpty else { throw AIAnalysisError.missingConfiguration }
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(ChatRequest(
+            model: model,
+            messages: [ChatMessage(role: "user", content: "只回复 OK")],
+            stream: false,
+            temperature: 0,
+            maxTokens: 8
+        ))
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw AIAnalysisError.invalidResponse }
+        guard 200..<300 ~= http.statusCode else {
+            let apiError = try? JSONDecoder().decode(ChatErrorResponse.self, from: data)
+            throw AIAnalysisError.server(apiError?.error.message ?? "AI 服务返回错误（\(http.statusCode)）")
+        }
     }
 
     func chat(
