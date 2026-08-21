@@ -161,17 +161,20 @@ struct DashboardView: View {
     private var visiblePlayStationTrophies: PlayStationTrophySummary? {
         selectedArchive == nil ? sync.playStationTrophies : nil
     }
+    private var hasLibraryRefinement: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || libraryScope != .all
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(spacing: 22) {
+                LazyVStack(spacing: 16) {
                     header
                     platformPicker
                     if selectedArchive != nil { archiveBanner }
                     insightCard
                     if let receipt = visibleReceipt { syncReceiptCard(receipt) }
-                    if filter != .playStation {
+                    if filter == .switchConsole {
                         PlayCalendarSection(
                             accountID: selectedArchive?.platform == .switchConsole
                                 ? selectedArchive?.accountID ?? ""
@@ -181,7 +184,6 @@ struct DashboardView: View {
                     }
                     if filter == .playStation, visiblePlayStationTrophies != nil { trophyCard }
                     library
-                    privacyNote
                 }
                 .padding(.horizontal, 18)
                 .padding(.bottom, 38)
@@ -196,21 +198,27 @@ struct DashboardView: View {
             }
 			.sheet(isPresented: $showAIAnalysis) {
 				AIAnalysisView(games: currentAccountGames, accountScopeKey: activeAccountScopeKey)
+                    .presentationDetents([.large])
             }
 			.sheet(isPresented: $showSettings) {
 				SettingsView(sync: sync)
+                    .presentationDetents([.large])
 			}
             .sheet(isPresented: $showAccountCenter) {
                 AccountCenterView(sync: sync, games: games, selectedArchive: $selectedArchive)
+                    .presentationDetents([.large])
             }
             .sheet(isPresented: $showInsights) {
                 InsightsView(games: currentAccountGames, accountScopeKey: activeAccountScopeKey)
+                    .presentationDetents([.large])
             }
             .sheet(isPresented: $showPlans) {
                 SavedPlansView(accountScopeKey: activeAccountScopeKey)
+                    .presentationDetents([.large])
             }
             .sheet(item: $selectedGame) { game in
-                GameDetailView(game: game)
+                GameDetailView(game: game, accountScopeKey: activeAccountScopeKey)
+                    .presentationDetents([.large])
             }
             .confirmationDialog("连接游戏平台", isPresented: $showConnectionOptions, titleVisibility: .visible) {
                 Button(sync.isPlayStationConnected ? "PlayStation 已连接" : "连接 PlayStation") { connectionSheet = .playStation }
@@ -221,6 +229,7 @@ struct DashboardView: View {
                 get: { sync.errorMessage != nil && connectionSheet == nil },
                 set: { if !$0 { sync.errorMessage = nil } }
             )) {
+                Button("账号与同步") { showAccountCenter = true }
                 Button("知道了", role: .cancel) {}
             } message: {
                 Text(sync.errorMessage ?? "未知错误")
@@ -231,6 +240,12 @@ struct DashboardView: View {
             .onReceive(NotificationCenter.default.publisher(for: .youJiLocalDataDidReset)) { _ in
                 sync.resetNonCredentialState()
                 selectedArchive = nil
+            }
+            .onChange(of: selectedArchive) { _, archive in
+                guard let archive else { return }
+                filter = archive.platform == .playStation ? .playStation : .switchConsole
+                searchText = ""
+                libraryScope = .all
             }
         }
     }
@@ -250,21 +265,8 @@ struct DashboardView: View {
             Spacer()
             platformSyncButton(.playStation)
             platformSyncButton(.switchConsole)
-			Button { showAIAnalysis = true } label: {
-				HStack(spacing: 4) {
-					Image(systemName: "sparkles")
-					Text("AI")
-				}
-				.font(.system(size: 9, weight: .black, design: .rounded))
-				.foregroundStyle(.white)
-				.frame(width: 45, height: 36)
-				.background(YJColor.purple, in: Capsule())
-			}
-			.buttonStyle(.plain)
-			.accessibilityLabel("AI 游戏分析")
-			Menu {
+            Menu {
                 Button { showAccountCenter = true } label: { Label("账号与同步", systemImage: "person.crop.circle") }
-                Button { showInsights = true } label: { Label("游玩洞察", systemImage: "chart.line.uptrend.xyaxis") }
                 Button { showPlans = true } label: { Label("待玩与重温", systemImage: "bookmark") }
                 Button { showSettings = true } label: { Label("设置", systemImage: "gearshape") }
             } label: {
@@ -284,10 +286,7 @@ struct DashboardView: View {
         return switch filter {
         case .playStation: sync.playStationReceipt
         case .switchConsole: sync.nintendoReceipt
-        case .all:
-            [sync.playStationReceipt, sync.nintendoReceipt]
-                .compactMap { $0 }
-                .max { $0.syncedAt < $1.syncedAt }
+        case .all: nil
         }
     }
 
@@ -323,7 +322,7 @@ struct DashboardView: View {
                 }
             }
             Spacer()
-            Button("详情") { showAccountCenter = true }.font(.caption.bold())
+            Button("同步详情") { showAccountCenter = true }.font(.caption.bold())
         }
         .padding(14)
         .youjiCard()
@@ -408,7 +407,20 @@ struct DashboardView: View {
 
     private var overviewInsightCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            heroTitle("ALL GAMES / 总览", value: format(minutes: playStationMinutes + switchMinutes))
+            HStack(alignment: .top, spacing: 12) {
+                heroTitle("ALL GAMES / 总览", value: format(minutes: playStationMinutes + switchMinutes))
+                Spacer(minLength: 4)
+                if !currentAccountGames.isEmpty {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        overviewHeroShortcut("游玩洞察", icon: "chart.line.uptrend.xyaxis") {
+                            showInsights = true
+                        }
+                        overviewHeroShortcut("游戏大脑", icon: "sparkles") {
+                            showAIAnalysis = true
+                        }
+                    }
+                }
+            }
             HStack(spacing: 10) {
                 platformMetric(
                     name: "PlayStation",
@@ -428,6 +440,23 @@ struct DashboardView: View {
             }
         }
         .heroCard(colors: [YJColor.ink, Color(red: 0.12, green: 0.10, blue: 0.20)])
+    }
+
+    private func overviewHeroShortcut(
+        _ title: String,
+        icon: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.caption2.bold())
+                .foregroundStyle(.white.opacity(0.9))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(.white.opacity(0.10), in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.12)))
+        }
+        .buttonStyle(.plain)
     }
 
     private var playStationInsightCard: some View {
@@ -508,19 +537,26 @@ struct DashboardView: View {
     }
 
     private func recentGameLine(_ game: GameRecord, eyebrow: String) -> some View {
-        HStack(spacing: 11) {
-            CachedCoverImage(urlString: game.imageURL)
-            .frame(width: 46, height: 46)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+        Button { selectedGame = game } label: {
+            HStack(spacing: 11) {
+                CachedCoverImage(urlString: game.imageURL)
+                .frame(width: 46, height: 46)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(eyebrow).font(.caption2).foregroundStyle(.white.opacity(0.55))
-                Text(game.title).font(.subheadline.bold()).foregroundStyle(.white).lineLimit(1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(eyebrow).font(.caption2).foregroundStyle(.white.opacity(0.55))
+                    Text(game.title).font(.subheadline.bold()).foregroundStyle(.white).lineLimit(1)
+                }
+                Spacer()
+                Text(compactHours(game.totalMinutes)).font(.caption.bold()).foregroundStyle(.white.opacity(0.72))
+                Image(systemName: "chevron.right")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.white.opacity(0.45))
             }
-            Spacer()
-            Text(compactHours(game.totalMinutes)).font(.caption.bold()).foregroundStyle(.white.opacity(0.72))
+            .padding(.top, 2)
         }
-        .padding(.top, 2)
+        .buttonStyle(.plain)
+        .accessibilityHint("打开游戏档案")
     }
 
     private func heroMiniStat(value: String, label: String) -> some View {
@@ -592,17 +628,29 @@ struct DashboardView: View {
         let lastGameID = libraryGames.last?.applicationID
 
         return VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .bottom) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("LIBRARY / 游戏库").font(.system(size: 9, weight: .black, design: .monospaced)).tracking(1.2).foregroundStyle(YJColor.muted)
-                    Text(filter == .all ? "全部冒险" : "\(filter.rawValue) 冒险").font(.title.bold())
-                }
-                Spacer()
-            }
-
             HStack {
-                Text("共 \(libraryGames.count) 款游戏").font(.caption).foregroundStyle(YJColor.muted)
+                Text("游戏库").font(.headline)
+                Text("\(libraryGames.count)")
+                    .font(.caption.bold())
+                    .foregroundStyle(YJColor.muted)
                 Spacer()
+                Menu {
+                    ForEach(LibraryScope.allCases, id: \.self) { scope in
+                        Button {
+                            libraryScope = scope
+                        } label: {
+                            if scope == libraryScope {
+                                Label(scope.rawValue, systemImage: "checkmark")
+                            } else {
+                                Text(scope.rawValue)
+                            }
+                        }
+                    }
+                } label: {
+                    Label(libraryScope.rawValue, systemImage: "line.3.horizontal.decrease.circle")
+                        .font(.caption.bold())
+                        .foregroundStyle(YJColor.ink)
+                }
                 Menu {
                     ForEach(GameSort.allCases.filter { filter == .playStation || !$0.isPlayStationOnly }, id: \.self) { option in
                         Button {
@@ -616,12 +664,14 @@ struct DashboardView: View {
                         }
                     }
                 } label: {
-                    Label(gameSort.rawValue, systemImage: "arrow.up.arrow.down")
-                        .font(.caption.bold()).foregroundStyle(YJColor.ink)
-                        .padding(.horizontal, 11).padding(.vertical, 7)
-                        .background(YJColor.card, in: Capsule())
-                        .overlay(Capsule().stroke(YJColor.line))
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.caption.bold())
+                        .foregroundStyle(YJColor.ink)
+                        .frame(width: 30, height: 30)
+                        .background(YJColor.card, in: Circle())
+                        .overlay(Circle().stroke(YJColor.line))
                 }
+                .accessibilityLabel("排序：\(gameSort.rawValue)")
             }
 
             HStack(spacing: 10) {
@@ -638,19 +688,6 @@ struct DashboardView: View {
             .padding(.horizontal, 13).padding(.vertical, 10)
             .background(YJColor.card, in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(YJColor.line))
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(LibraryScope.allCases, id: \.self) { scope in
-                        Button(scope.rawValue) { libraryScope = scope }
-                            .font(.caption.bold())
-                            .foregroundStyle(libraryScope == scope ? .white : YJColor.ink)
-                            .padding(.horizontal, 12).padding(.vertical, 7)
-                            .background(libraryScope == scope ? YJColor.ink : YJColor.card, in: Capsule())
-                            .overlay(Capsule().stroke(YJColor.line))
-                    }
-                }
-            }
 
             if libraryGames.isEmpty {
                 emptyLibrary
@@ -679,7 +716,12 @@ struct DashboardView: View {
             Text(emptyTitle).font(.headline)
             Text(emptyMessage).font(.caption).foregroundStyle(YJColor.muted).multilineTextAlignment(.center)
             Button(emptyButtonTitle) {
-                if let platform = filter.platform {
+                if hasLibraryRefinement {
+                    searchText = ""
+                    libraryScope = .all
+                } else if let archive = selectedArchive, filter.platform != archive.platform {
+                    filter = archive.platform == .playStation ? .playStation : .switchConsole
+                } else if let platform = filter.platform {
                     connectionSheet = platform == .playStation ? .playStation : .switchConsole
                 } else {
                     showConnectionOptions = true
@@ -693,27 +735,18 @@ struct DashboardView: View {
         .youjiCard()
     }
 
-    private var privacyNote: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "lock.shield.fill").foregroundStyle(YJColor.purple)
-                Text("Nintendo 会话令牌与 PlayStation 刷新令牌只保存在这台 iPhone 的 Keychain。游迹不会保存账号密码。")
-                    .font(.caption2).foregroundStyle(YJColor.muted).lineSpacing(3)
-            }
-            if sync.connectedPlatformCount > 0 {
-                HStack(spacing: 16) {
-                    if sync.isPlayStationConnected { Button("断开 PlayStation") { sync.disconnectPlayStation() } }
-                    if sync.isNintendoConnected { Button("断开 Switch") { sync.disconnectNintendo() } }
-                }
-                .font(.caption2.bold()).foregroundStyle(YJColor.coral)
-            }
-        }
-        .padding(16)
-        .background(Color.white.opacity(0.45), in: RoundedRectangle(cornerRadius: 16))
-    }
-
     private var emptyTitle: String {
-        switch filter {
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "没有找到匹配的游戏" }
+        switch libraryScope {
+        case .favorites: return "还没有收藏游戏"
+        case .active: return "还没有进行中的游戏"
+        case .hidden: return "没有已隐藏的游戏"
+        case .all: break
+        }
+        if let archive = selectedArchive, filter.platform != nil, filter.platform != archive.platform {
+            return "这个档案没有 \(filter.rawValue) 记录"
+        }
+        return switch filter {
         case .all: "游戏记录还没进来"
         case .playStation: "PlayStation 记录还没进来"
         case .switchConsole: "Switch 记录还没进来"
@@ -721,7 +754,9 @@ struct DashboardView: View {
     }
 
     private var emptyMessage: String {
-        switch filter {
+        if hasLibraryRefinement { return "调整关键词或清除筛选，继续浏览完整游戏库。" }
+        if selectedArchive != nil { return "历史档案只包含原账号所在平台的本地记录。" }
+        return switch filter {
         case .all: "连接 PlayStation 或 Nintendo Account，统一查看游戏时间。"
         case .playStation: "登录 PlayStation Network 后同步 PS4 / PS5 游戏总时长。"
         case .switchConsole: "登录 Nintendo Account 后同步账号中的 Play Activity。"
@@ -729,7 +764,9 @@ struct DashboardView: View {
     }
 
     private var emptyButtonTitle: String {
-        switch filter {
+        if hasLibraryRefinement { return "清除搜索与筛选" }
+        if selectedArchive != nil { return "查看档案平台" }
+        return switch filter {
         case .all: "连接游戏平台"
         case .playStation: "连接 PlayStation"
         case .switchConsole: "连接 Switch"

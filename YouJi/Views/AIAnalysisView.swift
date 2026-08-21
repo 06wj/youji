@@ -90,7 +90,7 @@ struct AIAnalysisView: View {
 			.sheet(isPresented: $showSettings, onDismiss: {
 				hasAIConfiguration = AISettingsStore.isConfigured
 			}) {
-				SettingsView()
+				SettingsView(prioritizesAIConfiguration: true)
 			}
 			.sheet(isPresented: $showChat) {
 				AIChatListView(games: games, accountScopeKey: accountScopeKey)
@@ -116,46 +116,81 @@ struct AIAnalysisView: View {
 	}
 
     private var headerSection: some View {
-        HStack(spacing: 14) {
-            Image("BrandIcon")
-                .resizable().scaledToFill()
-                .frame(width: 50, height: 50)
-                .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-			VStack(alignment: .leading, spacing: 3) {
-                Text("读懂你的游戏习惯")
-					.font(.title3.bold())
-				Text("从游玩记录生成人格，也可以继续聊游戏。")
-					.font(.caption)
-					.foregroundStyle(YJColor.muted)
-					.lineLimit(2)
+        VStack(spacing: 13) {
+            HStack(spacing: 14) {
+                Image("BrandIcon")
+                    .resizable().scaledToFill()
+                    .frame(width: 50, height: 50)
+                    .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+				VStack(alignment: .leading, spacing: 3) {
+                    Text("读懂你的游戏习惯")
+						.font(.title3.bold())
+					Text("从游玩记录生成人格，也可以继续聊游戏。")
+						.font(.caption)
+						.foregroundStyle(YJColor.muted)
+						.lineLimit(2)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 10) {
+                Button { showChat = true } label: {
+                    brainShortcut(
+                        title: "游戏聊天",
+                        detail: hasChatGames ? "继续追问" : "暂无可用游戏",
+                        icon: "bubble.left.and.bubble.right.fill",
+                        foreground: .white,
+                        background: YJColor.ink,
+                        showsBorder: false
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasChatGames)
+                .opacity(hasChatGames ? 1 : 0.45)
+
+                Button { showProfileHistory = true } label: {
+                    brainShortcut(
+                        title: "人格历史",
+                        detail: "已保存 \(profileCount) 次",
+                        icon: "clock.arrow.circlepath",
+                        foreground: YJColor.ink,
+                        background: YJColor.card,
+                        showsBorder: true
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var profileCount: Int {
+        allProfiles.filter { $0.accountScopeKey == accountScopeKey }.count
+    }
+
+    private func brainShortcut(
+        title: String,
+        detail: String,
+        icon: String,
+        foreground: Color,
+        background: Color,
+        showsBorder: Bool
+    ) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon).font(.subheadline.bold())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.caption.bold())
+                Text(detail).font(.caption2).opacity(0.65).lineLimit(1)
             }
             Spacer(minLength: 0)
-			Button {
-				showChat = true
-			} label: {
-				VStack(spacing: 4) {
-					Image(systemName: "bubble.left.and.bubble.right.fill")
-						.font(.subheadline.bold())
-					Text("聊天").font(.caption2.bold())
-				}
-				.foregroundStyle(.white)
-				.frame(width: 54, height: 50)
-				.background(YJColor.ink, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-			}
-			.buttonStyle(.plain)
-			.disabled(!hasChatGames)
-			.opacity(hasChatGames ? 1 : 0.4)
-			.accessibilityLabel(hasChatGames ? "打开游戏聊天" : "没有可用于聊天的游戏")
         }
-        .overlay(alignment: .bottomTrailing) {
-            if allProfiles.contains(where: { $0.accountScopeKey == accountScopeKey }) {
-                Button { showProfileHistory = true } label: {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.caption.bold()).foregroundStyle(YJColor.purple)
-                        .padding(7).background(.white, in: Circle())
-                }
-                .offset(y: 15)
-                .accessibilityLabel("查看历史人格")
+        .foregroundStyle(foreground)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            if showsBorder {
+                RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(YJColor.line)
             }
         }
     }

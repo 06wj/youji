@@ -18,6 +18,9 @@ struct AIChatView: View {
     @State private var activeRequestID: UUID?
     @State private var canRetry = false
     @State private var planSaved = false
+    @State private var showPlanEditor = false
+    @State private var planTitleDraft = ""
+    @State private var planNoteDraft = ""
     @FocusState private var composerFocused: Bool
 
     init(conversation: AIConversation) {
@@ -45,7 +48,33 @@ struct AIChatView: View {
         .sheet(isPresented: $showSettings, onDismiss: {
             hasAIConfiguration = AISettingsStore.isConfigured
         }) {
-            SettingsView()
+            SettingsView(prioritizesAIConfiguration: true)
+        }
+        .sheet(isPresented: $showPlanEditor) {
+            NavigationStack {
+                Form {
+                    Section("计划名称") {
+                        TextField("准备玩或重温什么", text: $planTitleDraft)
+                    }
+                    Section("保留的 AI 建议") {
+                        TextEditor(text: $planNoteDraft)
+                            .frame(minHeight: 180)
+                    }
+                }
+                .navigationTitle("保存为行动计划")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("取消") { showPlanEditor = false }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("保存", action: savePlanDraft)
+                            .fontWeight(.semibold)
+                            .disabled(planTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
         .alert("聊天失败", isPresented: Binding(
             get: { errorMessage != nil },
@@ -198,7 +227,7 @@ struct AIChatView: View {
                         Label("复制", systemImage: "doc.on.doc")
                     }
                     if message.role == .assistant {
-                        Button { saveAsPlan(message) } label: {
+                        Button { preparePlan(message) } label: {
                             Label("保存为待玩灵感", systemImage: "bookmark")
                         }
                     }
@@ -339,14 +368,25 @@ struct AIChatView: View {
         }
     }
 
-    private func saveAsPlan(_ message: AIChatMessage) {
+    private func preparePlan(_ message: AIChatMessage) {
         let firstLine = message.content.split(whereSeparator: \.isNewline).first.map(String.init) ?? conversation.title
+        planTitleDraft = String(firstLine.prefix(28))
+        planNoteDraft = message.content
+        showPlanEditor = true
+    }
+
+    private func savePlanDraft() {
+        let title = planTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
         modelContext.insert(SavedGamePlan(
             accountScopeKey: conversation.accountScopeKey,
-            title: String(firstLine.prefix(28)),
-            note: message.content
+            title: title,
+            note: planNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         ))
         try? modelContext.save()
+        showPlanEditor = false
+        planTitleDraft = ""
+        planNoteDraft = ""
         withAnimation { planSaved = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { withAnimation { planSaved = false } }
     }

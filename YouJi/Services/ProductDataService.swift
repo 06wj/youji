@@ -445,24 +445,49 @@ struct PlayPeriodInsight: Equatable {
     let activeGames: Int
 }
 
+struct PlayGameContribution: Identifiable, Equatable {
+    let gameID: String
+    let addedMinutes: Int
+    let addedTrophies: Int
+
+    var id: String { gameID }
+}
+
 enum PlayInsightCalculator {
     static func insight(snapshots: [PlaySnapshot], since start: Date, now: Date = .now) -> PlayPeriodInsight {
+        let values = contributions(snapshots: snapshots, since: start, now: now)
+        return PlayPeriodInsight(
+            addedMinutes: values.reduce(0) { $0 + $1.addedMinutes },
+            addedTrophies: values.reduce(0) { $0 + $1.addedTrophies },
+            activeGames: values.count
+        )
+    }
+
+    static func contributions(
+        snapshots: [PlaySnapshot],
+        since start: Date,
+        now: Date = .now
+    ) -> [PlayGameContribution] {
         let grouped = Dictionary(grouping: snapshots.filter { $0.date <= now }, by: \.gameID)
-        var minutes = 0
-        var trophies = 0
-        var activeGames = 0
-        for values in grouped.values {
+        return grouped.compactMap { gameID, values in
             let sorted = values.sorted { $0.date < $1.date }
-            guard let latest = sorted.last else { continue }
+            guard let latest = sorted.last else { return nil }
             let baseline = sorted.last(where: { $0.date <= start }) ?? sorted.first
-            guard let baseline else { continue }
+            guard let baseline else { return nil }
             let minuteDelta = max(0, latest.totalMinutes - baseline.totalMinutes)
             let trophyDelta = max(0, latest.trophiesEarned - baseline.trophiesEarned)
-            if minuteDelta > 0 || trophyDelta > 0 { activeGames += 1 }
-            minutes += minuteDelta
-            trophies += trophyDelta
+            guard minuteDelta > 0 || trophyDelta > 0 else { return nil }
+            return PlayGameContribution(
+                gameID: gameID,
+                addedMinutes: minuteDelta,
+                addedTrophies: trophyDelta
+            )
         }
-        return PlayPeriodInsight(addedMinutes: minutes, addedTrophies: trophies, activeGames: activeGames)
+        .sorted {
+            if $0.addedMinutes != $1.addedMinutes { return $0.addedMinutes > $1.addedMinutes }
+            if $0.addedTrophies != $1.addedTrophies { return $0.addedTrophies > $1.addedTrophies }
+            return $0.gameID < $1.gameID
+        }
     }
 }
 

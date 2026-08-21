@@ -254,6 +254,11 @@ final class YouJiDataTests: XCTestCase {
         XCTAssertEqual(insight.addedMinutes, 150)
         XCTAssertEqual(insight.addedTrophies, 3)
         XCTAssertEqual(insight.activeGames, 1)
+
+        let contributions = PlayInsightCalculator.contributions(snapshots: snapshots, since: start, now: now)
+        XCTAssertEqual(contributions, [
+            PlayGameContribution(gameID: "ps:a:one", addedMinutes: 150, addedTrophies: 3),
+        ])
     }
 
     func testSnapshotKeepsCumulativeValues() {

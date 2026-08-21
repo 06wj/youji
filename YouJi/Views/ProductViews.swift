@@ -9,9 +9,12 @@ struct GameDetailView: View {
     @Bindable var game: GameRecord
     @Query private var snapshots: [PlaySnapshot]
     @Query private var activities: [DailyPlayActivity]
+    @Query(sort: \SavedGamePlan.createdAt, order: .reverse) private var plans: [SavedGamePlan]
+    let accountScopeKey: String
 
-    init(game: GameRecord) {
+    init(game: GameRecord, accountScopeKey: String) {
         self.game = game
+        self.accountScopeKey = accountScopeKey
         let gameID = game.applicationID
         _snapshots = Query(
             filter: #Predicate<PlaySnapshot> { $0.gameID == gameID },
@@ -30,6 +33,7 @@ struct GameDetailView: View {
                 VStack(spacing: 18) {
                     hero
                     personalCard
+                    planCard
                     historyCard
                     if game.platform == .playStation { trophyCard }
                     if game.platform == .switchConsole, !activities.isEmpty { dailyCard }
@@ -106,6 +110,56 @@ struct GameDetailView: View {
         }
         .padding(17)
         .youjiCard()
+    }
+
+    private var existingPlan: SavedGamePlan? {
+        plans.first {
+            $0.accountScopeKey == accountScopeKey
+                && !$0.isCompleted
+                && $0.title.compare(game.title, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+    }
+
+    private var planCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("NEXT / 下一步").eyebrowStyle()
+            HStack(spacing: 12) {
+                Image(systemName: existingPlan == nil ? "bookmark" : "bookmark.fill")
+                    .font(.headline.bold())
+                    .foregroundStyle(existingPlan == nil ? YJColor.ink : YJColor.purple)
+                    .frame(width: 42, height: 42)
+                    .background(YJColor.paper, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(existingPlan == nil ? "想以后继续这段冒险？" : "已加入待玩与重温")
+                        .font(.subheadline.bold())
+                    Text(existingPlan == nil ? "把这款游戏加入行动清单，回到首页也能继续。" : "可以在首页的“接下来”或清单中找到它。")
+                        .font(.caption)
+                        .foregroundStyle(YJColor.muted)
+                }
+                Spacer(minLength: 0)
+            }
+            if existingPlan == nil {
+                Button(action: addToPlans) {
+                    Label("加入待玩与重温", systemImage: "plus")
+                        .font(.subheadline.bold())
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(YJColor.ink)
+            }
+        }
+        .padding(17)
+        .youjiCard()
+    }
+
+    private func addToPlans() {
+        modelContext.insert(SavedGamePlan(
+            accountScopeKey: accountScopeKey,
+            title: game.title,
+            note: "来自 \(game.platform.rawValue) 游戏档案"
+        ))
+        try? modelContext.save()
     }
 
     @ViewBuilder
@@ -238,9 +292,9 @@ struct AccountCenterView: View {
                     Section {
                         ForEach(archives) { archive in archiveRow(archive) }
                     } header: {
-                        Text("本地历史档案")
+                        Text("本地账号档案")
                     } footer: {
-                        Text("断开账号不会删除这些记录。可以离线查看，也可以单独清除不再需要的档案。")
+                        Text("这里同时包含当前账号和已断开的历史账号。游戏数量包含首页自动隐藏的短试玩记录。")
                     }
                 }
             }
@@ -297,10 +351,8 @@ struct AccountCenterView: View {
                         .font(.caption.bold())
                 }
             }
-            if let date {
-                Text("最后成功同步：\(date.formatted(.relative(presentation: .named)))")
-                    .font(.caption).foregroundStyle(YJColor.muted)
-            }
+            Text(date.map { "最后成功同步：\($0.formatted(.relative(presentation: .named)))" } ?? "尚未完成过同步")
+                .font(.caption).foregroundStyle(YJColor.muted)
             if let receipt { receiptLine(receipt) }
         }
         .padding(.vertical, 5)
@@ -325,7 +377,7 @@ struct AccountCenterView: View {
             : archive.accountID == sync.currentNintendoAccountID
         return HStack {
             VStack(alignment: .leading, spacing: 3) {
-                Text("\(archive.platform.rawValue) · \(count) 款").font(.subheadline.bold())
+                Text("\(archive.platform.rawValue) · \(count) 款本地记录").font(.subheadline.bold())
                 Text(isCurrent ? "当前账号" : "账号尾号 …\(archive.accountID.suffix(6))")
                     .font(.caption).foregroundStyle(YJColor.muted)
             }
@@ -360,12 +412,16 @@ struct InsightsView: View {
         let ids = Set(games.map(\.applicationID))
         return snapshots.filter { ids.contains($0.gameID) }
     }
+    private var snapshotDays: [Date] {
+        Array(Set(relevantSnapshots.map { Calendar.current.startOfDay(for: $0.date) })).sorted()
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 18) {
                     intro
+                    coverageCard
                     periodCard("最近 7 天", days: 7, color: YJColor.purple)
                     periodCard("最近 30 天", days: 30, color: YJColor.coral)
                     yearCard
@@ -397,43 +453,335 @@ struct InsightsView: View {
         .padding(18).youjiCard()
     }
 
+    private var coverageCard: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: snapshotDays.count >= 2 ? "checkmark.circle.fill" : "clock.badge.exclamationmark")
+                .font(.title3)
+                .foregroundStyle(snapshotDays.count >= 2 ? YJColor.purple : YJColor.coral)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(snapshotDays.isEmpty ? "还没有同步快照" : "已记录 \(snapshotDays.count) 个同步日")
+                    .font(.subheadline.bold())
+                Text(coverageSummary)
+                    .font(.caption)
+                    .foregroundStyle(YJColor.muted)
+                    .lineSpacing(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(YJColor.purple.opacity(0.07), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+    }
+
+    private var coverageSummary: String {
+        guard let first = snapshotDays.first, let last = snapshotDays.last else {
+            return "回到首页完成同步后，这里才会开始积累变化。"
+        }
+        guard snapshotDays.count >= 2 else {
+            return "首次记录于 \(first.formatted(.dateTime.month().day()))；请在之后再次同步，才能计算增量。"
+        }
+        return "覆盖 \(first.formatted(.dateTime.year().month().day())) 至 \(last.formatted(.dateTime.month().day()))。未同步期间的变化会计入相邻两次记录之间。"
+    }
+
     private func periodCard(_ title: String, days: Int, color: Color) -> some View {
         let start = Calendar.current.date(byAdding: .day, value: -days, to: .now) ?? .distantPast
         let insight = PlayInsightCalculator.insight(snapshots: relevantSnapshots, since: start)
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text(title).font(.headline)
-                Spacer()
-                Image(systemName: "chart.line.uptrend.xyaxis").foregroundStyle(color)
+        return NavigationLink {
+            InsightPeriodDetailView(
+                title: title,
+                start: start,
+                color: color,
+                snapshots: relevantSnapshots,
+                games: games,
+                accountScopeKey: accountScopeKey,
+                showsMonthlyBreakdown: false
+            )
+        } label: {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text(title).font(.headline)
+                    Spacer()
+                    Image(systemName: "chart.line.uptrend.xyaxis").foregroundStyle(color)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.bold())
+                        .foregroundStyle(YJColor.muted)
+                }
+                HStack {
+                    insightMetric(format(minutes: insight.addedMinutes), "新增时长")
+                    insightMetric("\(insight.activeGames)", "活跃游戏")
+                    insightMetric("\(insight.addedTrophies)", "新增奖杯")
+                }
+                Text(periodCoverageMessage(since: start))
+                    .font(.caption2)
+                    .foregroundStyle(YJColor.muted)
             }
-            HStack {
-                insightMetric(format(minutes: insight.addedMinutes), "新增时长")
-                insightMetric("\(insight.activeGames)", "活跃游戏")
-                insightMetric("\(insight.addedTrophies)", "新增奖杯")
-            }
+            .padding(17).youjiCard()
         }
-        .padding(17).youjiCard()
+        .buttonStyle(.plain)
+        .accessibilityHint("查看游戏贡献明细")
     }
 
     private var yearCard: some View {
         let start = Calendar.current.dateInterval(of: .year, for: .now)?.start ?? .distantPast
         let insight = PlayInsightCalculator.insight(snapshots: relevantSnapshots, since: start)
         let year = Calendar.current.component(.year, from: .now)
-        return VStack(alignment: .leading, spacing: 14) {
-            Text("\(year) 年度回顾").font(.headline)
-            Text(format(minutes: insight.addedMinutes)).font(.system(size: 34, weight: .bold, design: .rounded))
-            Text("\(insight.activeGames) 款游戏有变化 · 新增 \(insight.addedTrophies) 个奖杯")
-                .font(.caption).foregroundStyle(YJColor.muted)
+        return NavigationLink {
+            InsightPeriodDetailView(
+                title: "\(year) 年度回顾",
+                start: start,
+                color: YJColor.purple,
+                snapshots: relevantSnapshots,
+                games: games,
+                accountScopeKey: accountScopeKey,
+                showsMonthlyBreakdown: true
+            )
+        } label: {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("\(year) 年度回顾").font(.headline)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.bold())
+                        .foregroundStyle(.white.opacity(0.72))
+                }
+                Text(format(minutes: insight.addedMinutes)).font(.system(size: 34, weight: .bold, design: .rounded))
+                Text("\(insight.activeGames) 款游戏有变化 · 新增 \(insight.addedTrophies) 个奖杯")
+                    .font(.caption).foregroundStyle(.white.opacity(0.72))
+                Text(periodCoverageMessage(since: start))
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.58))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(18)
+            .background(LinearGradient(colors: [YJColor.ink, YJColor.purple], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 20))
+            .foregroundStyle(.white)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .background(LinearGradient(colors: [YJColor.ink, YJColor.purple], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 20))
-        .foregroundStyle(.white)
+        .buttonStyle(.plain)
+        .accessibilityHint("查看月度和游戏贡献明细")
     }
 
     private func insightMetric(_ value: String, _ label: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(value).font(.headline.bold())
+            Text(label).font(.caption2).foregroundStyle(YJColor.muted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func periodCoverageMessage(since start: Date) -> String {
+        guard let first = snapshotDays.first, let last = snapshotDays.last else {
+            return "暂无可计算的数据"
+        }
+        if snapshotDays.count < 2 {
+            return "至少需要两个不同日期的同步记录"
+        }
+        if first > start {
+            return "当前仅覆盖 \(first.formatted(.dateTime.month().day())) 至 \(last.formatted(.dateTime.month().day()))"
+        }
+        return "已覆盖所选周期，共 \(snapshotDays.count) 个同步日"
+    }
+
+    private func format(minutes: Int) -> String {
+        minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
+    }
+}
+
+private struct InsightMonthBreakdown: Identifiable {
+    let start: Date
+    let insight: PlayPeriodInsight
+
+    var id: Date { start }
+}
+
+private struct InsightPeriodDetailView: View {
+    let title: String
+    let start: Date
+    let color: Color
+    let snapshots: [PlaySnapshot]
+    let games: [GameRecord]
+    let accountScopeKey: String
+    let showsMonthlyBreakdown: Bool
+    @State private var selectedGame: GameRecord?
+
+    private var insight: PlayPeriodInsight {
+        PlayInsightCalculator.insight(snapshots: snapshots, since: start)
+    }
+
+    private var contributions: [PlayGameContribution] {
+        PlayInsightCalculator.contributions(snapshots: snapshots, since: start)
+    }
+
+    private var gamesByID: [String: GameRecord] {
+        Dictionary(uniqueKeysWithValues: games.map { ($0.applicationID, $0) })
+    }
+
+    private var periodSnapshotDays: [Date] {
+        Array(Set(snapshots.lazy
+            .filter { $0.date >= start && $0.date <= .now }
+            .map { Calendar.current.startOfDay(for: $0.date) }))
+            .sorted()
+    }
+
+    private var monthBreakdowns: [InsightMonthBreakdown] {
+        guard showsMonthlyBreakdown else { return [] }
+        let calendar = Calendar.current
+        let currentMonth = calendar.dateInterval(of: .month, for: .now)?.start ?? .now
+        var month = calendar.dateInterval(of: .month, for: start)?.start ?? start
+        var result: [InsightMonthBreakdown] = []
+        while month <= currentMonth {
+            guard let next = calendar.date(byAdding: .month, value: 1, to: month) else { break }
+            let monthEnd = min(.now, next.addingTimeInterval(-1))
+            result.append(InsightMonthBreakdown(
+                start: month,
+                insight: PlayInsightCalculator.insight(snapshots: snapshots, since: month, now: monthEnd)
+            ))
+            month = next
+        }
+        return result.reversed()
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                summaryCard
+                if showsMonthlyBreakdown { monthlyCard }
+                contributionCard
+                methodologyCard
+            }
+            .padding(18)
+            .padding(.bottom, 30)
+        }
+        .background(YJColor.paper.ignoresSafeArea())
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $selectedGame) { game in
+            GameDetailView(game: game, accountScopeKey: accountScopeKey)
+                .presentationDetents([.large])
+        }
+    }
+
+    private var summaryCard: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Text("PERIOD / 周期总览").eyebrowStyle()
+            HStack {
+                detailMetric(format(minutes: insight.addedMinutes), "新增时长")
+                detailMetric("\(insight.activeGames)", "活跃游戏")
+                detailMetric("\(insight.addedTrophies)", "新增奖杯")
+            }
+            Label(coverageText, systemImage: periodSnapshotDays.count >= 2 ? "checkmark.circle.fill" : "clock.badge.exclamationmark")
+                .font(.caption)
+                .foregroundStyle(periodSnapshotDays.count >= 2 ? color : YJColor.coral)
+        }
+        .padding(17)
+        .youjiCard()
+    }
+
+    private var monthlyCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("MONTHLY / 月度变化").eyebrowStyle()
+            ForEach(monthBreakdowns) { item in
+                HStack(spacing: 12) {
+                    Text(item.start.formatted(.dateTime.month(.abbreviated)))
+                        .font(.subheadline.bold())
+                        .frame(width: 48, alignment: .leading)
+                    GeometryReader { proxy in
+                        let maximum = max(monthBreakdowns.map(\.insight.addedMinutes).max() ?? 0, 1)
+                        Capsule()
+                            .fill(color.opacity(item.insight.addedMinutes > 0 ? 0.82 : 0.12))
+                            .frame(width: max(4, proxy.size.width * Double(item.insight.addedMinutes) / Double(maximum)), height: 8)
+                            .frame(maxHeight: .infinity)
+                    }
+                    .frame(height: 20)
+                    Text(format(minutes: item.insight.addedMinutes))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(item.insight.addedMinutes > 0 ? YJColor.ink : YJColor.muted)
+                        .frame(minWidth: 54, alignment: .trailing)
+                }
+            }
+            Text("按同步快照记录变化；跨月未同步的增量会落在下一次同步所在月份。")
+                .font(.caption2)
+                .foregroundStyle(YJColor.muted)
+        }
+        .padding(17)
+        .youjiCard()
+    }
+
+    private var contributionCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("GAMES / 游戏贡献").eyebrowStyle()
+            if contributions.isEmpty {
+                ContentUnavailableView("这个周期还没有变化", systemImage: "chart.bar.xaxis", description: Text("完成下一次同步后再回来查看。"))
+                    .frame(maxWidth: .infinity)
+            } else {
+                ForEach(Array(contributions.enumerated()), id: \.element.id) { index, contribution in
+                    if let game = gamesByID[contribution.gameID] {
+                        Button { selectedGame = game } label: {
+                            contributionRow(game: game, contribution: contribution)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("打开游戏档案")
+                        if index < contributions.count - 1 { Divider() }
+                    }
+                }
+            }
+        }
+        .padding(17)
+        .youjiCard()
+    }
+
+    private func contributionRow(game: GameRecord, contribution: PlayGameContribution) -> some View {
+        HStack(spacing: 12) {
+            CachedCoverImage(urlString: game.imageURL)
+                .frame(width: 48, height: 48)
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(game.title).font(.subheadline.bold()).lineLimit(2)
+                Text(game.platform.rawValue.uppercased())
+                    .font(.system(size: 9, weight: .black, design: .monospaced))
+                    .foregroundStyle(game.platform == .playStation ? Color.blue : Color.red)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text("+\(format(minutes: contribution.addedMinutes))")
+                    .font(.subheadline.bold()).monospacedDigit()
+                if contribution.addedTrophies > 0 {
+                    Text("+\(contribution.addedTrophies) 奖杯")
+                        .font(.caption2).foregroundStyle(YJColor.muted)
+                }
+            }
+            Image(systemName: "chevron.right")
+                .font(.caption.bold())
+                .foregroundStyle(YJColor.muted)
+        }
+        .contentShape(Rectangle())
+    }
+
+    private var methodologyCard: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("数据如何计算").font(.subheadline.bold())
+            Text("游迹比较周期起点前后的平台累计值。这里展示的是两次同步之间被记录到的变化，不等同于平台逐日精确日志。")
+                .font(.caption)
+                .foregroundStyle(YJColor.muted)
+                .lineSpacing(3)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(17)
+        .background(color.opacity(0.07), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+    }
+
+    private var coverageText: String {
+        guard let first = periodSnapshotDays.first, let last = periodSnapshotDays.last else {
+            return "所选周期内还没有同步记录"
+        }
+        guard periodSnapshotDays.count >= 2 else {
+            return "仅在 \(first.formatted(.dateTime.month().day())) 留下 1 个同步日"
+        }
+        return "\(first.formatted(.dateTime.month().day())) 至 \(last.formatted(.dateTime.month().day()))，共 \(periodSnapshotDays.count) 个同步日"
+    }
+
+    private func detailMetric(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(value).font(.headline.bold()).monospacedDigit()
             Text(label).font(.caption2).foregroundStyle(YJColor.muted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -452,32 +800,53 @@ struct SavedPlansView: View {
     @State private var showNewPlan = false
     @State private var newTitle = ""
     @State private var newNote = ""
+    @State private var showCompleted = false
 
     private var plans: [SavedGamePlan] { allPlans.filter { $0.accountScopeKey == accountScopeKey } }
+    private var activePlans: [SavedGamePlan] { plans.filter { !$0.isCompleted } }
+    private var completedPlans: [SavedGamePlan] { plans.filter(\.isCompleted) }
 
     var body: some View {
         NavigationStack {
             List {
                 if plans.isEmpty {
-                    ContentUnavailableView("清单还是空的", systemImage: "bookmark", description: Text("保存 AI 灵感，或手动加入准备游玩和重温的游戏。"))
+                    VStack(spacing: 18) {
+                        ContentUnavailableView("清单还是空的", systemImage: "bookmark", description: Text("从游戏档案加入作品、保存 AI 灵感，或手动写下一段计划。"))
+                        Button("加入第一条计划") { showNewPlan = true }
+                            .buttonStyle(.borderedProminent)
+                            .tint(YJColor.ink)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .listRowBackground(Color.clear)
                 } else {
-                    ForEach(plans) { plan in
-                        Button {
-                            plan.isCompleted.toggle()
-                            try? modelContext.save()
-                        } label: {
-                            HStack(alignment: .top, spacing: 12) {
-                                Image(systemName: plan.isCompleted ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(plan.isCompleted ? YJColor.purple : YJColor.muted)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(plan.title).font(.subheadline.bold()).strikethrough(plan.isCompleted)
-                                    if !plan.note.isEmpty { Text(plan.note).font(.caption).foregroundStyle(YJColor.muted).lineLimit(3) }
-                                }
-                            }
+                    Section {
+                        HStack {
+                            Label("\(activePlans.count) 条待行动", systemImage: "bookmark.fill")
+                                .font(.subheadline.bold())
+                            Spacer()
+                            Text("已完成 \(completedPlans.count)")
+                                .font(.caption)
+                                .foregroundStyle(YJColor.muted)
                         }
-                        .buttonStyle(.plain)
-                        .swipeActions {
-                            Button("删除", role: .destructive) { modelContext.delete(plan); try? modelContext.save() }
+                    } footer: {
+                        Text("只有点按左侧圆圈才会标记完成，打开页面或查看文字不会误操作。")
+                    }
+
+                    if activePlans.isEmpty {
+                        Section {
+                            ContentUnavailableView("当前计划都完成了", systemImage: "checkmark.circle", description: Text("可以加入下一款想玩或重温的游戏。"))
+                        }
+                    } else {
+                        Section("接下来") {
+                            ForEach(activePlans) { plan in planRow(plan) }
+                        }
+                    }
+
+                    if !completedPlans.isEmpty {
+                        Section {
+                            DisclosureGroup("已完成 \(completedPlans.count) 条", isExpanded: $showCompleted) {
+                                ForEach(completedPlans) { plan in planRow(plan) }
+                            }
                         }
                     }
                 }
@@ -491,8 +860,13 @@ struct SavedPlansView: View {
             .sheet(isPresented: $showNewPlan) {
                 NavigationStack {
                     Form {
-                        TextField("游戏名称或计划", text: $newTitle)
-                        TextField("备注（可选）", text: $newNote, axis: .vertical)
+                        Section("准备做什么") {
+                            TextField("游戏名称或计划", text: $newTitle)
+                        }
+                        Section("补充说明（可选）") {
+                            TextField("为什么想玩、准备何时开始…", text: $newNote, axis: .vertical)
+                                .lineLimit(3...6)
+                        }
                     }
                     .navigationTitle("加入清单")
                     .navigationBarTitleDisplayMode(.inline)
@@ -512,6 +886,41 @@ struct SavedPlansView: View {
             }
         }
     }
+
+    private func planRow(_ plan: SavedGamePlan) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Button {
+                plan.isCompleted.toggle()
+                try? modelContext.save()
+            } label: {
+                Image(systemName: plan.isCompleted ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(plan.isCompleted ? YJColor.purple : YJColor.muted)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(plan.isCompleted ? "标记为未完成" : "标记为已完成")
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(plan.title)
+                    .font(.subheadline.bold())
+                    .strikethrough(plan.isCompleted)
+                if !plan.note.isEmpty {
+                    Text(plan.note)
+                        .font(.caption)
+                        .foregroundStyle(YJColor.muted)
+                        .lineLimit(3)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 3)
+        .swipeActions {
+            Button("删除", role: .destructive) {
+                modelContext.delete(plan)
+                try? modelContext.save()
+            }
+        }
+    }
 }
 
 struct AIProfileHistoryView: View {
@@ -521,6 +930,7 @@ struct AIProfileHistoryView: View {
     let accountScopeKey: String
     @State private var shareURL: URL?
     @State private var shareError: String?
+    @State private var expandedProfileIDs: Set<UUID> = []
 
     private var profiles: [AIProfileResult] { allProfiles.filter { $0.accountScopeKey == accountScopeKey } }
 
@@ -549,7 +959,16 @@ struct AIProfileHistoryView: View {
                             Text("\(profile.platformFilter) · > \(profile.minimumHours)h · \(profile.gameCount) 款")
                                 .font(.caption2).foregroundStyle(YJColor.muted)
                             Text((try? AttributedString(markdown: profile.text)) ?? AttributedString(profile.text))
-                                .font(.subheadline).lineLimit(8)
+                                .font(.subheadline)
+                                .lineLimit(expandedProfileIDs.contains(profile.id) ? nil : 6)
+                            Button(expandedProfileIDs.contains(profile.id) ? "收起" : "查看全文") {
+                                if expandedProfileIDs.contains(profile.id) {
+                                    expandedProfileIDs.remove(profile.id)
+                                } else {
+                                    expandedProfileIDs.insert(profile.id)
+                                }
+                            }
+                            .font(.caption.bold())
                         }
                         .padding(.vertical, 6)
                         .swipeActions {
@@ -617,6 +1036,18 @@ struct DataManagementView: View {
     var body: some View {
         List {
             Section {
+                HStack(spacing: 12) {
+                    Image(systemName: "externaldrive.fill")
+                        .foregroundStyle(YJColor.purple)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("本机共有 \(games.count) 款游戏记录").font(.subheadline.bold())
+                        Text("完整备份还会包含同步历史、每日活动和 AI 内容。")
+                            .font(.caption).foregroundStyle(YJColor.muted)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            Section {
                 Button("导出完整 JSON 备份", action: exportBackup)
                 Button("导出游戏库 CSV", action: exportCSV)
                 ShareLink(item: ProductDataService.diagnostics(modelContext: modelContext)) {
@@ -635,7 +1066,7 @@ struct DataManagementView: View {
                 Text("恢复采用合并方式：同一记录会更新，备份外的本地记录不会被删除。")
             }
             Section {
-                Button("删除全部本地数据", role: .destructive) { confirmDeleteAll = true }
+                Button("删除全部本地档案", role: .destructive) { confirmDeleteAll = true }
             } footer: {
                 Text("会同时清除封面缓存与本地同步状态，但不会自动断开游戏平台凭据。建议先导出完整备份。")
             }
@@ -666,7 +1097,7 @@ struct DataManagementView: View {
         .alert("数据管理", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("知道了", role: .cancel) {}
         } message: { Text(message ?? "") }
-        .confirmationDialog("删除全部本地数据？", isPresented: $confirmDeleteAll, titleVisibility: .visible) {
+        .confirmationDialog("删除全部本地档案？", isPresented: $confirmDeleteAll, titleVisibility: .visible) {
             Button("永久删除", role: .destructive) {
                 Task {
                     do {

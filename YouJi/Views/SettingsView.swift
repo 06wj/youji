@@ -12,9 +12,11 @@ struct SettingsView: View {
     @State private var connectionMessage: String?
     @State private var reminderEnabled = UserDefaults.standard.bool(forKey: "weekly-sync-reminder-enabled")
     let sync: SyncCoordinator?
+    let prioritizesAIConfiguration: Bool
 
-    init(sync: SyncCoordinator? = nil) {
+    init(sync: SyncCoordinator? = nil, prioritizesAIConfiguration: Bool = false) {
         self.sync = sync
+        self.prioritizesAIConfiguration = prioritizesAIConfiguration
         _apiKey = State(initialValue: AISettingsStore.apiKey)
         _modelName = State(initialValue: AISettingsStore.modelName)
         _endpoint = State(initialValue: AISettingsStore.endpointString)
@@ -25,8 +27,13 @@ struct SettingsView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     intro
-                    credentials
-                    product
+                    if prioritizesAIConfiguration {
+                        credentials
+                        product
+                    } else {
+                        product
+                        credentials
+                    }
                     privacy
                 }
                 .padding(18)
@@ -37,11 +44,6 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("关闭") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(saved ? "已保存" : "保存") { save() }
-                        .fontWeight(.semibold)
-                        .disabled(modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
             }
             .alert("保存失败", isPresented: Binding(
                 get: { errorMessage != nil },
@@ -60,13 +62,15 @@ struct SettingsView: View {
 
     private var intro: some View {
         HStack(spacing: 14) {
-            Image(systemName: "sparkles")
+            Image(systemName: prioritizesAIConfiguration ? "sparkles" : "slider.horizontal.3")
                 .font(.title2.bold()).foregroundStyle(.white)
                 .frame(width: 52, height: 52)
                 .background(YJColor.purple, in: RoundedRectangle(cornerRadius: 16))
             VStack(alignment: .leading, spacing: 4) {
-                Text("AI 游戏人格").font(.headline)
-                Text("使用你自己的模型配置分析筛选后的本地游戏记录。")
+                Text(prioritizesAIConfiguration ? "配置游戏大脑" : "管理游迹").font(.headline)
+                Text(prioritizesAIConfiguration
+                     ? "使用你自己的模型配置分析筛选后的本地游戏记录。"
+                     : "管理同步提醒、本地数据、隐私与 AI 服务。")
                     .font(.caption).foregroundStyle(YJColor.muted)
             }
             Spacer(minLength: 0)
@@ -110,17 +114,38 @@ struct SettingsView: View {
                     .font(.caption2).foregroundStyle(YJColor.muted)
             }
 
-            Button {
-                testConnection()
-            } label: {
-                HStack {
-                    if isTesting { ProgressView().controlSize(.small) }
-                    Label(isTesting ? "正在测试…" : "保存并测试连接", systemImage: "bolt.horizontal.circle")
+            HStack(spacing: 10) {
+                Button(action: save) {
+                    Label(saved ? "已保存" : "保存配置", systemImage: saved ? "checkmark" : "tray.and.arrow.down")
+                        .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
+                .buttonStyle(.bordered)
+                .disabled(modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Button(action: testConnection) {
+                    HStack {
+                        if isTesting { ProgressView().controlSize(.small) }
+                        Text(isTesting ? "测试中…" : "保存并测试")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(YJColor.ink)
+                .disabled(isTesting || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .buttonStyle(.bordered)
-            .disabled(isTesting || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            if !apiKey.isEmpty {
+                Button(role: .destructive) {
+                    do {
+                        try AISettingsStore.save(apiKey: "", modelName: modelName, endpoint: endpoint)
+                        apiKey = ""
+                        saved = true
+                    } catch { errorMessage = error.localizedDescription }
+                } label: {
+                    Label("清除本机 AI API Key", systemImage: "key.slash")
+                        .font(.subheadline.bold())
+                }
+            }
 
         }
         .padding(17)
@@ -170,18 +195,6 @@ struct SettingsView: View {
             Link(destination: URL(string: "https://github.com/06wj/youji-ios/issues/new")!) {
                 Label("发送产品反馈", systemImage: "envelope.fill")
                     .font(.subheadline.bold())
-            }
-            if !apiKey.isEmpty {
-                Button(role: .destructive) {
-                    do {
-                        try AISettingsStore.save(apiKey: "", modelName: modelName, endpoint: endpoint)
-                        apiKey = ""
-                        saved = true
-                    } catch { errorMessage = error.localizedDescription }
-                } label: {
-                    Label("清除本机 AI API Key", systemImage: "key.slash")
-                        .font(.subheadline.bold())
-                }
             }
         }
         .foregroundStyle(YJColor.ink)

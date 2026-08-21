@@ -60,6 +60,7 @@ Chats are saved locally and organized into easy-to-find topics. Continue an exis
 - **Recent activity:** Understand your Nintendo Switch rhythm through a focused seven-day view.
 - **Play calendar:** Keep exact Switch play dates and per-game minutes on device after each sync, even after they leave Nintendo's seven-day window.
 - **Long-term trends:** Turn synchronization snapshots into seven-day, 30-day, and annual changes in play time and trophies.
+- **A focused but complete home:** Keep the cross-platform overview and full library, with small shortcuts inside the overview card for drill-down insights and Game Brain; plans move to the More menu, while Switch daily records stay in the Switch view.
 - **Searchable game archive:** Search by title or note, open a game timeline, and add favorites, visibility, status, and private notes.
 - **Account-aware history:** See which account is connected, inspect per-platform sync receipts, and reopen disconnected local archives without mixing accounts.
 - **A cleaner collection:** Keep meaningful games in focus while short trials and long-forgotten launches stay out of the way.
@@ -143,7 +144,7 @@ docs/
 YouJiTests/                # Model, parsing, prompt, and persistence regression tests
 ```
 
-See the [architecture notes](docs/ARCHITECTURE.md) for the current data flow and platform sync design. Before making AI-assisted changes, read the [AI contributor guide](AGENTS.md) for product invariants, security boundaries, and verification steps.
+See the [product requirements](docs/PRD.md) for the current product scope, user journeys, screen map, and prioritized gaps. The [architecture notes](docs/ARCHITECTURE.md) describe the current data flow and platform sync design. Before making AI-assisted changes, read the [AI contributor guide](AGENTS.md) for product invariants, security boundaries, and verification steps.
 
 ### Platform API notes
 
