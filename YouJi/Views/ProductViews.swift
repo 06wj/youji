@@ -3,6 +3,11 @@ import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum GameDetailInitialSection: String {
+    case history
+    case personal
+}
+
 struct GameDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -11,10 +16,17 @@ struct GameDetailView: View {
     @Query private var activities: [DailyPlayActivity]
     @Query(sort: \SavedGamePlan.createdAt, order: .reverse) private var plans: [SavedGamePlan]
     let accountScopeKey: String
+    let initialSection: GameDetailInitialSection?
+    @State private var showingHistoryInfo = false
 
-    init(game: GameRecord, accountScopeKey: String) {
+    init(
+        game: GameRecord,
+        accountScopeKey: String,
+        initialSection: GameDetailInitialSection? = nil
+    ) {
         self.game = game
         self.accountScopeKey = accountScopeKey
+        self.initialSection = initialSection
         let gameID = game.applicationID
         _snapshots = Query(
             filter: #Predicate<PlaySnapshot> { $0.gameID == gameID },
@@ -29,18 +41,26 @@ struct GameDetailView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 18) {
-                    hero
-                    personalCard
-                    planCard
-                    historyCard
-                    if game.platform == .playStation { trophyCard }
-                    if game.platform == .switchConsole, !activities.isEmpty { dailyCard }
-                    sourceCard
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 18) {
+                        hero
+                        historyCard.id(GameDetailInitialSection.history.rawValue)
+                        if game.platform == .playStation { trophyCard }
+                        if game.platform == .switchConsole, !activities.isEmpty { dailyCard }
+                        personalCard.id(GameDetailInitialSection.personal.rawValue)
+                        planCard
+                    }
+                    .padding(18)
+                    .padding(.bottom, 30)
                 }
-                .padding(18)
-                .padding(.bottom, 30)
+                .task {
+                    guard let initialSection else { return }
+                    try? await Task.sleep(for: .milliseconds(800))
+                    withAnimation(nil) {
+                        proxy.scrollTo(initialSection.rawValue, anchor: .top)
+                    }
+                }
             }
             .background(YJColor.paper.ignoresSafeArea())
             .navigationTitle("游戏档案")
@@ -52,6 +72,11 @@ struct GameDetailView: View {
                         dismiss()
                     }
                 }
+            }
+            .alert("时间线说明", isPresented: $showingHistoryInfo) {
+                Button("知道了", role: .cancel) {}
+            } message: {
+                Text("同一天只保留最后一次时长记录；图表会放大实际变化范围，每个圆点代表一个有记录的日期。")
             }
         }
     }
@@ -162,36 +187,80 @@ struct GameDetailView: View {
         try? modelContext.save()
     }
 
+    private var dailySnapshots: [PlaySnapshot] {
+        PlayHistoryChartBuilder.dailySnapshots(snapshots)
+    }
+
+    private var historyYDomain: ClosedRange<Double> {
+        PlayHistoryChartBuilder.yDomain(totalMinutes: dailySnapshots.map(\.totalMinutes))
+    }
+
     @ViewBuilder
     private var historyCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("HISTORY / 时间线").eyebrowStyle()
-            HStack {
+            HStack(spacing: 16) {
                 dateMetric("首次游玩", game.firstPlayedAt)
                 Divider()
                 dateMetric("最近游玩", game.lastPlayedAt)
-                Divider()
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("同步快照").font(.caption2).foregroundStyle(YJColor.muted)
-                    Text("\(snapshots.count) 次").font(.subheadline.bold())
-                }
             }
-            if snapshots.count >= 2 {
-                Chart(snapshots) { snapshot in
-                    LineMark(
-                        x: .value("日期", snapshot.date),
-                        y: .value("累计小时", Double(snapshot.totalMinutes) / 60)
-                    )
+            HStack(spacing: 8) {
+                Label(format(minutes: game.totalMinutes), systemImage: "clock.fill")
+                    .font(.caption.bold())
                     .foregroundStyle(YJColor.purple)
-                    PointMark(
-                        x: .value("日期", snapshot.date),
-                        y: .value("累计小时", Double(snapshot.totalMinutes) / 60)
-                    )
-                    .foregroundStyle(YJColor.purple)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(YJColor.purple.opacity(0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+
+            if dailySnapshots.count >= 2 {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("累计游玩时长").font(.subheadline.bold())
+                    Spacer()
+                    Text("小时").font(.caption2).foregroundStyle(YJColor.muted)
+                    Button {
+                        showingHistoryInfo = true
+                    } label: {
+                        Image(systemName: "info.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("时间线说明")
                 }
-                .frame(height: 150)
+                Chart(dailySnapshots) { snapshot in
+                    LineMark(
+                        x: .value("日期", Calendar.current.startOfDay(for: snapshot.date)),
+                        y: .value("累计小时", Double(snapshot.totalMinutes) / 60)
+                    )
+                    .foregroundStyle(YJColor.purple)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                    PointMark(
+                        x: .value("日期", Calendar.current.startOfDay(for: snapshot.date)),
+                        y: .value("累计小时", Double(snapshot.totalMinutes) / 60)
+                    )
+                    .foregroundStyle(YJColor.purple)
+                    .symbolSize(38)
+                }
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                            .foregroundStyle(YJColor.muted.opacity(0.25))
+                        AxisValueLabel(format: .dateTime.month().day())
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { value in
+                        AxisGridLine().foregroundStyle(YJColor.muted.opacity(0.2))
+                        AxisValueLabel {
+                            if let hours = value.as(Double.self) {
+                                Text("\(hours, format: .number.precision(.fractionLength(0...1)))h")
+                            }
+                        }
+                    }
+                }
+                .chartYScale(domain: historyYDomain)
+                .frame(height: 170)
             } else {
-                Text("再完成一次同步后，这里会开始显示累计时长变化。")
+                Text("再同步一次后，这里会开始显示时长变化。")
                     .font(.caption).foregroundStyle(YJColor.muted)
             }
         }
@@ -230,24 +299,11 @@ struct GameDetailView: View {
                     .foregroundStyle(YJColor.coral)
             }
             .frame(height: 150)
-            Text("已在本机保存 \(Set(activities.map { Calendar.current.startOfDay(for: $0.day) }).count) 个游玩日")
+            Text("共 \(Set(activities.map { Calendar.current.startOfDay(for: $0.day) }).count) 个游玩日")
                 .font(.caption).foregroundStyle(YJColor.muted)
         }
         .padding(17)
         .youjiCard()
-    }
-
-    private var sourceCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("记录由 \(game.platform.rawValue) 同步并保存在本机。自定义收藏、隐藏、状态和备注不会上传到游戏平台。")
-                .font(.caption).foregroundStyle(YJColor.muted).lineSpacing(3)
-            Text("档案标识：\(game.titleID.isEmpty ? game.resolvedTitleID : game.titleID)")
-                .font(.caption2.monospaced()).foregroundStyle(YJColor.muted)
-                .textSelection(.enabled)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(15)
-        .background(Color.white.opacity(0.45), in: RoundedRectangle(cornerRadius: 15))
     }
 
     private func dateMetric(_ label: String, _ date: Date?) -> some View {
@@ -294,7 +350,7 @@ struct AccountCenterView: View {
                     } header: {
                         Text("本地账号档案")
                     } footer: {
-                        Text("这里同时包含当前账号和已断开的历史账号。游戏数量包含首页自动隐藏的短试玩记录。")
+                        Text("这里也会保留已断开连接的历史账号。")
                     }
                 }
             }
@@ -312,7 +368,7 @@ struct AccountCenterView: View {
                 }
                 Button("取消", role: .cancel) { disconnectingPlatform = nil }
             } message: {
-                Text("凭据和当前显示身份会移除，本机游戏历史不会删除。")
+                Text("登录信息和当前账号会移除，这台设备上的游戏历史不会删除。")
             }
             .confirmationDialog("删除本地档案？", isPresented: Binding(
                 get: { archiveToDelete != nil },
@@ -326,7 +382,7 @@ struct AccountCenterView: View {
                 }
                 Button("取消", role: .cancel) { archiveToDelete = nil }
             } message: {
-                Text("会删除该账号的游戏、同步快照、每日记录和关联 AI 内容，无法撤销。")
+                Text("会删除该账号的游戏记录、每日活动和相关 AI 内容，无法撤销。")
             }
         }
     }
@@ -359,11 +415,16 @@ struct AccountCenterView: View {
     }
 
     private func receiptLine(_ receipt: PlatformSyncReceipt) -> some View {
-        let change = "新增 \(receipt.addedGames) 款 · 更新 \(receipt.changedGames) 款 · +\(format(minutes: receipt.addedMinutes))"
+        let highlights = [
+            receipt.addedMinutes > 0 ? "+\(format(minutes: receipt.addedMinutes))" : nil,
+            receipt.addedGames > 0 ? "新收录 \(receipt.addedGames) 款" : nil
+        ].compactMap { $0 }
         return VStack(alignment: .leading, spacing: 3) {
-            Text(change).font(.caption.bold())
-            if receipt.platform == .playStation {
-                Text("新增 \(receipt.addedTrophies) 个奖杯\(receipt.trophyFailures > 0 ? " · \(receipt.trophyFailures) 项待重试" : " · 奖杯同步完整")")
+            Text(highlights.isEmpty ? "当前记录已是最新" : highlights.joined(separator: " · "))
+                .font(.caption.bold())
+            if receipt.platform == .playStation,
+               receipt.addedTrophies > 0 || receipt.trophyFailures > 0 {
+                Text("新增 \(receipt.addedTrophies) 个奖杯\(receipt.trophyFailures > 0 ? " · \(receipt.trophyFailures) 项待下次重试" : "")")
                     .font(.caption2)
                     .foregroundStyle(receipt.trophyFailures > 0 ? YJColor.coral : YJColor.muted)
             }
@@ -404,9 +465,11 @@ struct AccountCenterView: View {
 struct InsightsView: View {
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \PlaySnapshot.date) private var snapshots: [PlaySnapshot]
+    @Query(sort: \DailyPlayActivity.day) private var activities: [DailyPlayActivity]
     let games: [GameRecord]
     let accountScopeKey: String
     @State private var showPlans = false
+    @State private var showingInsightsInfo = false
 
     private var relevantSnapshots: [PlaySnapshot] {
         let ids = Set(games.map(\.applicationID))
@@ -415,13 +478,23 @@ struct InsightsView: View {
     private var snapshotDays: [Date] {
         Array(Set(relevantSnapshots.map { Calendar.current.startOfDay(for: $0.date) })).sorted()
     }
+    private var timelineEntries: [PlayTimelineEntry] {
+        PlayTimelineBuilder.entries(
+            snapshots: relevantSnapshots,
+            activities: activities,
+            includedGameIDs: Set(games.map(\.applicationID))
+        )
+    }
+    private var timelineDays: [PlayTimelineDay] {
+        PlayTimelineDay.grouped(entries: timelineEntries)
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 18) {
                     intro
-                    coverageCard
+                    timelineCard
                     periodCard("最近 7 天", days: 7, color: YJColor.purple)
                     periodCard("最近 30 天", days: 30, color: YJColor.coral)
                     yearCard
@@ -436,7 +509,22 @@ struct InsightsView: View {
             .background(YJColor.paper.ignoresSafeArea())
             .navigationTitle("游玩洞察")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        showingInsightsInfo = true
+                    } label: {
+                        Image(systemName: "info.circle")
+                    }
+                    .accessibilityLabel("洞察说明")
+                    Button("完成") { dismiss() }
+                }
+            }
+            .alert("洞察说明", isPresented: $showingInsightsInfo) {
+                Button("知道了", role: .cancel) {}
+            } message: {
+                Text(insightsInfoText)
+            }
             .sheet(isPresented: $showPlans) {
                 SavedPlansView(accountScopeKey: accountScopeKey)
             }
@@ -446,41 +534,89 @@ struct InsightsView: View {
     private var intro: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("让每次同步留下变化").font(.title2.bold())
-            Text("趋势来自平台返回的累计值差异；只有两个及以上同步时间点后才会产生增量。")
+            Text("回看最近一周、一个月和今年的游玩足迹。")
                 .font(.caption).foregroundStyle(YJColor.muted).lineSpacing(3)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18).youjiCard()
     }
 
-    private var coverageCard: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: snapshotDays.count >= 2 ? "checkmark.circle.fill" : "clock.badge.exclamationmark")
-                .font(.title3)
-                .foregroundStyle(snapshotDays.count >= 2 ? YJColor.purple : YJColor.coral)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(snapshotDays.isEmpty ? "还没有同步快照" : "已记录 \(snapshotDays.count) 个同步日")
-                    .font(.subheadline.bold())
-                Text(coverageSummary)
-                    .font(.caption)
-                    .foregroundStyle(YJColor.muted)
-                    .lineSpacing(2)
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(YJColor.purple.opacity(0.07), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
-    }
-
-    private var coverageSummary: String {
+    private var insightsInfoText: String {
+        let method = "游迹根据每次主动同步时的游戏总时长计算变化；两次同步之间的游玩会归入后一次同步日期。Switch 有每日活动时会优先使用每日记录。"
         guard let first = snapshotDays.first, let last = snapshotDays.last else {
-            return "回到首页完成同步后，这里才会开始积累变化。"
+            return "完成同步后，这里会开始记录游玩变化。\n\n\(method)"
         }
         guard snapshotDays.count >= 2 else {
-            return "首次记录于 \(first.formatted(.dateTime.month().day()))；请在之后再次同步，才能计算增量。"
+            return "已从 \(first.formatted(.dateTime.month().day())) 开始记录。再次同步后即可看到变化。\n\n\(method)"
         }
-        return "覆盖 \(first.formatted(.dateTime.year().month().day())) 至 \(last.formatted(.dateTime.month().day()))。未同步期间的变化会计入相邻两次记录之间。"
+        return "当前记录范围为 \(first.formatted(.dateTime.year().month().day())) 至 \(last.formatted(.dateTime.month().day()))。\n\n\(method)"
+    }
+
+    private var timelineCard: some View {
+        NavigationLink {
+            PlayTimelineView(
+                entries: timelineEntries,
+                games: games,
+                accountScopeKey: accountScopeKey
+            )
+        } label: {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("PLAY LOG / 总时间线").eyebrowStyle()
+                        Text(timelineDays.isEmpty ? "还没有可确认的游玩变化" : "已留下 \(timelineDays.count) 个游玩日")
+                            .font(.headline)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.bold())
+                        .foregroundStyle(YJColor.muted)
+                }
+
+                if timelineDays.isEmpty {
+                    Text("完成后续同步后，这里会按日期汇总各游戏的新增时长。")
+                        .font(.caption)
+                        .foregroundStyle(YJColor.muted)
+                } else {
+                    ForEach(Array(timelineDays.suffix(3).reversed())) { day in
+                        timelinePreviewRow(day: day)
+                    }
+                    Text("查看全部记录，可切换最新或最早优先")
+                        .font(.caption2)
+                        .foregroundStyle(YJColor.muted)
+                }
+            }
+            .padding(17)
+            .youjiCard()
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("查看按时间排列的全部游玩记录")
+    }
+
+    private func timelinePreviewRow(day: PlayTimelineDay) -> some View {
+        let dayGames = day.entries.compactMap { entry in
+            games.first(where: { $0.applicationID == entry.gameID })
+        }
+        return HStack(spacing: 11) {
+            Circle()
+                .fill(YJColor.purple)
+                .frame(width: 7, height: 7)
+            if let game = dayGames.first {
+                CachedCoverImage(urlString: game.imageURL)
+                    .frame(width: 38, height: 38)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(day.date.formatted(.dateTime.year().month().day()))
+                    .font(.subheadline.bold())
+                Text(dayGames.count == 1 ? (dayGames.first?.title ?? "1 款游戏") : "\(dayGames.count) 款游戏")
+                    .font(.caption2).foregroundStyle(YJColor.muted)
+            }
+            Spacer(minLength: 8)
+            Text(day.addedMinutes > 0 ? "+\(format(minutes: day.addedMinutes))" : "+\(day.addedTrophies) 奖杯")
+                .font(.caption.bold()).monospacedDigit()
+                .foregroundStyle(YJColor.purple)
+        }
     }
 
     private func periodCard(_ title: String, days: Int, color: Color) -> some View {
@@ -511,9 +647,6 @@ struct InsightsView: View {
                     insightMetric("\(insight.activeGames)", "活跃游戏")
                     insightMetric("\(insight.addedTrophies)", "新增奖杯")
                 }
-                Text(periodCoverageMessage(since: start))
-                    .font(.caption2)
-                    .foregroundStyle(YJColor.muted)
             }
             .padding(17).youjiCard()
         }
@@ -547,9 +680,6 @@ struct InsightsView: View {
                 Text(format(minutes: insight.addedMinutes)).font(.system(size: 34, weight: .bold, design: .rounded))
                 Text("\(insight.activeGames) 款游戏有变化 · 新增 \(insight.addedTrophies) 个奖杯")
                     .font(.caption).foregroundStyle(.white.opacity(0.72))
-                Text(periodCoverageMessage(since: start))
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.58))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(18)
@@ -568,17 +698,155 @@ struct InsightsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func periodCoverageMessage(since start: Date) -> String {
-        guard let first = snapshotDays.first, let last = snapshotDays.last else {
-            return "暂无可计算的数据"
+    private func format(minutes: Int) -> String {
+        minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
+    }
+}
+
+private struct PlayTimelineDay: Identifiable {
+    let date: Date
+    let entries: [PlayTimelineEntry]
+
+    var id: Date { date }
+    var addedMinutes: Int { entries.reduce(0) { $0 + $1.addedMinutes } }
+    var addedTrophies: Int { entries.reduce(0) { $0 + $1.addedTrophies } }
+
+    static func grouped(entries: [PlayTimelineEntry], calendar: Calendar = .current) -> [PlayTimelineDay] {
+        Dictionary(grouping: entries) { calendar.startOfDay(for: $0.date) }
+            .map { day, entries in
+                PlayTimelineDay(
+                    date: day,
+                    entries: entries.sorted {
+                        if $0.addedMinutes != $1.addedMinutes { return $0.addedMinutes > $1.addedMinutes }
+                        return $0.gameID < $1.gameID
+                    }
+                )
+            }
+            .sorted { $0.date < $1.date }
+    }
+}
+
+private struct PlayTimelineView: View {
+    let entries: [PlayTimelineEntry]
+    let games: [GameRecord]
+    let accountScopeKey: String
+    @State private var newestFirst = true
+    @State private var selectedGame: GameRecord?
+    @State private var showingTimelineInfo = false
+
+    private var gamesByID: [String: GameRecord] {
+        Dictionary(uniqueKeysWithValues: games.map { ($0.applicationID, $0) })
+    }
+
+    private var orderedDays: [PlayTimelineDay] {
+        let days = PlayTimelineDay.grouped(entries: entries)
+        return newestFirst ? days.reversed() : days
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                introCard
+                    .padding(.bottom, 18)
+                if entries.isEmpty {
+                    ContentUnavailableView(
+                        "还没有游玩记录",
+                        systemImage: "clock.arrow.circlepath",
+                        description: Text("至少同步两次后，才能看到游玩时长的变化。")
+                    )
+                    .padding(.top, 40)
+                } else {
+                    ForEach(orderedDays) { day in
+                        dayCard(day)
+                    }
+                }
+            }
+            .padding(18)
+            .padding(.bottom, 30)
         }
-        if snapshotDays.count < 2 {
-            return "至少需要两个不同日期的同步记录"
+        .background(YJColor.paper.ignoresSafeArea())
+        .navigationTitle("全部游玩时间线")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingTimelineInfo = true
+                } label: {
+                    Image(systemName: "info.circle")
+                }
+                .accessibilityLabel("时间线说明")
+            }
         }
-        if first > start {
-            return "当前仅覆盖 \(first.formatted(.dateTime.month().day())) 至 \(last.formatted(.dateTime.month().day()))"
+        .alert("时间线说明", isPresented: $showingTimelineInfo) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text("同一天的记录会合并为一个游玩日。Switch 有每日活动时会优先使用；其他记录按两次同步之间增加的时长整理。")
         }
-        return "已覆盖所选周期，共 \(snapshotDays.count) 个同步日"
+        .sheet(item: $selectedGame) { game in
+            GameDetailView(game: game, accountScopeKey: accountScopeKey)
+                .presentationDetents([.large])
+        }
+    }
+
+    private var introCard: some View {
+        Picker("时间顺序", selection: $newestFirst) {
+            Text("最新优先").tag(true)
+            Text("最早优先").tag(false)
+        }
+        .pickerStyle(.segmented)
+        .padding(16)
+        .youjiCard()
+    }
+
+    private func dayCard(_ day: PlayTimelineDay) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(day.date.formatted(.dateTime.year().month().day()))
+                    .font(.headline.bold()).monospacedDigit()
+                Spacer()
+                if day.addedMinutes > 0 {
+                    Text("共 +\(format(minutes: day.addedMinutes))")
+                        .font(.caption.bold()).foregroundStyle(YJColor.purple)
+                } else if day.addedTrophies > 0 {
+                    Text("新增 \(day.addedTrophies) 奖杯")
+                        .font(.caption.bold()).foregroundStyle(YJColor.purple)
+                }
+            }
+            ForEach(Array(day.entries.enumerated()), id: \.element.id) { index, entry in
+                if let game = gamesByID[entry.gameID] {
+                    Button { selectedGame = game } label: {
+                        HStack(spacing: 11) {
+                            CachedCoverImage(urlString: game.imageURL)
+                                .frame(width: 48, height: 48)
+                                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(game.title).font(.subheadline.bold()).lineLimit(2)
+                                HStack(spacing: 9) {
+                                    if entry.addedMinutes > 0 {
+                                        Label("+\(format(minutes: entry.addedMinutes))", systemImage: "clock.fill")
+                                    }
+                                    if entry.addedTrophies > 0 {
+                                        Label("+\(entry.addedTrophies)", systemImage: "trophy.fill")
+                                    }
+                                }
+                                .font(.caption.bold())
+                                .foregroundStyle(YJColor.purple)
+                            }
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right")
+                                .font(.caption.bold())
+                                .foregroundStyle(YJColor.muted)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if index < day.entries.count - 1 { Divider() }
+                }
+            }
+        }
+        .padding(16)
+        .youjiCard()
+        .padding(.bottom, 12)
     }
 
     private func format(minutes: Int) -> String {
@@ -602,6 +870,7 @@ private struct InsightPeriodDetailView: View {
     let accountScopeKey: String
     let showsMonthlyBreakdown: Bool
     @State private var selectedGame: GameRecord?
+    @State private var showingMethodologyInfo = false
 
     private var insight: PlayPeriodInsight {
         PlayInsightCalculator.insight(snapshots: snapshots, since: start)
@@ -646,7 +915,6 @@ private struct InsightPeriodDetailView: View {
                 summaryCard
                 if showsMonthlyBreakdown { monthlyCard }
                 contributionCard
-                methodologyCard
             }
             .padding(18)
             .padding(.bottom, 30)
@@ -654,6 +922,21 @@ private struct InsightPeriodDetailView: View {
         .background(YJColor.paper.ignoresSafeArea())
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingMethodologyInfo = true
+                } label: {
+                    Image(systemName: "info.circle")
+                }
+                .accessibilityLabel("数据说明")
+            }
+        }
+        .alert("数据说明", isPresented: $showingMethodologyInfo) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text("游迹根据每次主动同步时的游戏总时长计算变化，因此两次同步之间的游玩会归入后一次同步日期，不等同于游戏平台的逐日记录。")
+        }
         .sheet(item: $selectedGame) { game in
             GameDetailView(game: game, accountScopeKey: accountScopeKey)
                 .presentationDetents([.large])
@@ -698,9 +981,6 @@ private struct InsightPeriodDetailView: View {
                         .frame(minWidth: 54, alignment: .trailing)
                 }
             }
-            Text("按同步快照记录变化；跨月未同步的增量会落在下一次同步所在月份。")
-                .font(.caption2)
-                .foregroundStyle(YJColor.muted)
         }
         .padding(17)
         .youjiCard()
@@ -756,27 +1036,14 @@ private struct InsightPeriodDetailView: View {
         .contentShape(Rectangle())
     }
 
-    private var methodologyCard: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("数据如何计算").font(.subheadline.bold())
-            Text("游迹比较周期起点前后的平台累计值。这里展示的是两次同步之间被记录到的变化，不等同于平台逐日精确日志。")
-                .font(.caption)
-                .foregroundStyle(YJColor.muted)
-                .lineSpacing(3)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(17)
-        .background(color.opacity(0.07), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
-    }
-
     private var coverageText: String {
         guard let first = periodSnapshotDays.first, let last = periodSnapshotDays.last else {
-            return "所选周期内还没有同步记录"
+            return "同步后开始记录这个周期"
         }
         guard periodSnapshotDays.count >= 2 else {
-            return "仅在 \(first.formatted(.dateTime.month().day())) 留下 1 个同步日"
+            return "已从 \(first.formatted(.dateTime.month().day())) 开始记录，再同步一次即可看到变化"
         }
-        return "\(first.formatted(.dateTime.month().day())) 至 \(last.formatted(.dateTime.month().day()))，共 \(periodSnapshotDays.count) 个同步日"
+        return "记录范围：\(first.formatted(.dateTime.month().day())) 至 \(last.formatted(.dateTime.month().day()))"
     }
 
     private func detailMetric(_ value: String, _ label: String) -> some View {
@@ -1040,7 +1307,7 @@ struct DataManagementView: View {
                     Image(systemName: "externaldrive.fill")
                         .foregroundStyle(YJColor.purple)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("本机共有 \(games.count) 款游戏记录").font(.subheadline.bold())
+                        Text("这台设备共有 \(games.count) 款游戏记录").font(.subheadline.bold())
                         Text("完整备份还会包含同步历史、每日活动和 AI 内容。")
                             .font(.caption).foregroundStyle(YJColor.muted)
                     }
@@ -1048,27 +1315,27 @@ struct DataManagementView: View {
                 .padding(.vertical, 4)
             }
             Section {
-                Button("导出完整 JSON 备份", action: exportBackup)
-                Button("导出游戏库 CSV", action: exportCSV)
+                Button("导出完整备份", action: exportBackup)
+                Button("导出游戏库表格", action: exportCSV)
                 ShareLink(item: ProductDataService.diagnostics(modelContext: modelContext)) {
                     Label("分享安全诊断摘要", systemImage: "stethoscope")
                 }
             } header: {
                 Text("导出")
             } footer: {
-                Text("完整备份包含本地游戏、同步历史、每日活动和 AI 内容；不包含平台凭据、账号密码或 AI API Key。")
+                Text("完整备份包含游戏、同步历史、每日活动和 AI 内容；不包含游戏平台登录信息、账号密码或 AI API Key。")
             }
             Section {
-                Button("从 JSON 备份恢复") { isImporting = true }
+                Button("从备份恢复") { isImporting = true }
             } header: {
                 Text("恢复")
             } footer: {
-                Text("恢复采用合并方式：同一记录会更新，备份外的本地记录不会被删除。")
+                Text("恢复会合并现有内容：重复的游戏会更新，设备上独有的内容会保留。")
             }
             Section {
                 Button("删除全部本地档案", role: .destructive) { confirmDeleteAll = true }
             } footer: {
-                Text("会同时清除封面缓存与本地同步状态，但不会自动断开游戏平台凭据。建议先导出完整备份。")
+                Text("会删除这台设备上的所有游迹内容，但不会断开游戏平台账号。建议先导出完整备份。")
             }
         }
         .navigationTitle("数据管理")
@@ -1091,7 +1358,7 @@ struct DataManagementView: View {
                     data: Data(contentsOf: url),
                     modelContext: modelContext
                 )
-                message = "已合并恢复 \(summary.gameCount) 款游戏、\(summary.snapshotCount) 条同步快照。"
+                message = "已恢复 \(summary.gameCount) 款游戏及相关游玩记录。"
             } catch { message = error.localizedDescription }
         }
         .alert("数据管理", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
@@ -1103,12 +1370,12 @@ struct DataManagementView: View {
                     do {
                         try await ProductDataService.deleteAllLocalData(modelContext: modelContext)
                         sync?.resetNonCredentialState()
-                        message = "本地数据与封面缓存已删除。平台凭据仍保留，可再次主动同步。"
+                        message = "这台设备上的游迹内容已删除。游戏平台仍保持连接，可再次主动同步。"
                     } catch { message = error.localizedDescription }
                 }
             }
             Button("取消", role: .cancel) {}
-        } message: { Text("游戏、封面缓存、历史快照、每日记录、AI 会话、清单和同步显示状态都会删除，无法撤销。") }
+        } message: { Text("游戏记录、每日活动、AI 会话、人格、清单和私人备注都会删除，无法撤销。") }
     }
 
     private func exportBackup() {
@@ -1132,21 +1399,21 @@ struct PrivacyInfoView: View {
     var body: some View {
         List {
             Section("本机保存") {
-                Label("游戏、同步快照、Switch 每日记录", systemImage: "externaldrive.fill")
+                Label("游戏记录与 Switch 每日活动", systemImage: "externaldrive.fill")
                 Label("AI 会话、人格历史、待玩清单和私人备注", systemImage: "iphone")
-                Label("平台令牌与 AI API Key 保存在 Keychain", systemImage: "key.fill")
+                Label("平台登录信息与 AI API Key 仅保存在这台设备", systemImage: "key.fill")
             }
             Section("何时联网") {
                 Text("只有你点击连接或同步时才请求游戏平台。只有你点击生成或发送消息时才请求模型服务。游迹不会自动同步，也不会在后台上传游戏库。")
             }
             Section("发送给 AI") {
-                Text("人格分析仅发送当前筛选游戏的名称、平台、累计时长和已有奖杯比例。聊天发送创建会话时冻结的同类游戏信息及当前对话。不会发送游戏平台凭据、账号 ID、封面、私人备注或完整数据库。")
+                Text("人格分析仅发送当前筛选游戏的名称、平台、游玩时长和奖杯比例。聊天会发送开始对话时选用的游戏信息及当前对话。不会发送平台登录信息、账号标识、封面或私人备注。")
             }
             Section("用户控制") {
                 Text("你可以导出完整本地备份、恢复备份、清除单个历史账号档案、删除全部本地内容、断开平台连接或清除 AI API Key。断开平台默认保留游戏历史。")
             }
             Section("第三方服务") {
-                Text("PlayStation 和 Nintendo 接口并非稳定的公开第三方 API。AI 默认使用策量智算的 OpenAI 兼容接口，也可以在设置中改为你信任的 HTTPS 接口。第三方如何处理请求受其各自条款约束。")
+                Text("游戏平台服务调整时，连接或同步功能可能暂时不可用。AI 服务可在设置中更换；第三方如何处理请求受其各自条款约束。")
                 Link("查看完整隐私政策", destination: URL(string: "https://github.com/06wj/youji-ios/blob/main/docs/PRIVACY_POLICY.md")!)
             }
         }

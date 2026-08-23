@@ -453,6 +453,112 @@ struct PlayGameContribution: Identifiable, Equatable {
     var id: String { gameID }
 }
 
+enum PlayTimelineSource: Equatable {
+    case dailyActivity
+    case snapshotChange
+}
+
+struct PlayTimelineEntry: Identifiable, Equatable {
+    let id: String
+    let gameID: String
+    let date: Date
+    let addedMinutes: Int
+    let addedTrophies: Int
+    let source: PlayTimelineSource
+}
+
+enum PlayHistoryChartBuilder {
+    static func dailySnapshots(
+        _ snapshots: [PlaySnapshot],
+        calendar: Calendar = .current
+    ) -> [PlaySnapshot] {
+        Dictionary(grouping: snapshots) { calendar.startOfDay(for: $0.date) }
+            .compactMap { _, values in values.max { $0.date < $1.date } }
+            .sorted { $0.date < $1.date }
+    }
+
+    static func yDomain(totalMinutes: [Int]) -> ClosedRange<Double> {
+        let hours = totalMinutes.map { Double($0) / 60 }
+        guard let minimum = hours.min(), let maximum = hours.max() else { return 0...1 }
+        let change = maximum - minimum
+        let padding = change > 0 ? max(change * 0.18, 0.5) : max(minimum * 0.01, 1)
+        let lower = max(0, floor((minimum - padding) * 2) / 2)
+        let upper = max(lower + 1, ceil((maximum + padding) * 2) / 2)
+        return lower...upper
+    }
+}
+
+enum PlayTimelineBuilder {
+    static func entries(
+        snapshots: [PlaySnapshot],
+        activities: [DailyPlayActivity],
+        includedGameIDs: Set<String>
+    ) -> [PlayTimelineEntry] {
+        let relevantActivities = activities.filter {
+            includedGameIDs.contains($0.gameID) && $0.totalMinutes > 0
+        }
+        let gamesWithDailyActivity = Set(relevantActivities.map(\.gameID))
+
+        var result = relevantActivities.map { activity in
+            PlayTimelineEntry(
+                id: "daily:\(activity.activityID)",
+                gameID: activity.gameID,
+                date: activity.day,
+                addedMinutes: activity.totalMinutes,
+                addedTrophies: 0,
+                source: .dailyActivity
+            )
+        }
+
+        let relevantSnapshots = snapshots.filter {
+            includedGameIDs.contains($0.gameID)
+                && ($0.platform == .playStation || !gamesWithDailyActivity.contains($0.gameID))
+        }
+        for (gameID, values) in Dictionary(grouping: relevantSnapshots, by: \.gameID) {
+            let sorted = values.sorted { $0.date < $1.date }
+            guard sorted.count >= 2 else { continue }
+            for index in sorted.indices.dropFirst() {
+                let previous = sorted[sorted.index(before: index)]
+                let current = sorted[index]
+                let addedMinutes = max(0, current.totalMinutes - previous.totalMinutes)
+                let addedTrophies = max(0, current.trophiesEarned - previous.trophiesEarned)
+                guard addedMinutes > 0 || addedTrophies > 0 else { continue }
+                result.append(PlayTimelineEntry(
+                    id: "snapshot:\(current.snapshotID)",
+                    gameID: gameID,
+                    date: current.date,
+                    addedMinutes: addedMinutes,
+                    addedTrophies: addedTrophies,
+                    source: .snapshotChange
+                ))
+            }
+        }
+
+        let calendar = Calendar.current
+        let dailyResult = Dictionary(grouping: result) { entry in
+            "\(entry.gameID):\(Int(calendar.startOfDay(for: entry.date).timeIntervalSinceReferenceDate))"
+        }
+        .compactMap { _, values -> PlayTimelineEntry? in
+            guard let first = values.first else { return nil }
+            let day = calendar.startOfDay(for: first.date)
+            return PlayTimelineEntry(
+                id: "day:\(Int(day.timeIntervalSinceReferenceDate)):\(first.gameID)",
+                gameID: first.gameID,
+                date: day,
+                addedMinutes: values.reduce(0) { $0 + $1.addedMinutes },
+                addedTrophies: values.reduce(0) { $0 + $1.addedTrophies },
+                source: values.contains { $0.source == .dailyActivity } ? .dailyActivity : .snapshotChange
+            )
+        }
+
+        return dailyResult.sorted {
+            if $0.date != $1.date { return $0.date < $1.date }
+            if $0.gameID != $1.gameID { return $0.gameID < $1.gameID }
+            return $0.id < $1.id
+        }
+    }
+}
+
 enum PlayInsightCalculator {
     static func insight(snapshots: [PlaySnapshot], since start: Date, now: Date = .now) -> PlayPeriodInsight {
         let values = contributions(snapshots: snapshots, since: start, now: now)

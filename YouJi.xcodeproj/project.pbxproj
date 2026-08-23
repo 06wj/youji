@@ -33,6 +33,7 @@
 		A1000000000000000000001B /* Services/ProductDataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001B /* Services/ProductDataService.swift */; };
 		A1000000000000000000001C /* Views/ProductViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001C /* Views/ProductViews.swift */; };
 		A1000000000000000000001D /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* PrivacyInfo.xcprivacy */; };
+		A1000000000000000000001E /* Views/ScreenshotRouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001E /* Views/ScreenshotRouteView.swift */; };
 		A20000000000000000000001 /* YouJiDataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* YouJiDataTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -75,6 +76,7 @@
 		B1000000000000000000001B /* Services/ProductDataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/ProductDataService.swift; sourceTree = "<group>"; };
 		B1000000000000000000001C /* Views/ProductViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/ProductViews.swift; sourceTree = "<group>"; };
 		B1000000000000000000001D /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		B1000000000000000000001E /* Views/ScreenshotRouteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/ScreenshotRouteView.swift; sourceTree = "<group>"; };
 		B20000000000000000000001 /* YouJiDataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouJiDataTests.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* YouJiTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YouJiTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -135,6 +137,7 @@
 				B1000000000000000000001B /* Services/ProductDataService.swift */,
 				B1000000000000000000001C /* Views/ProductViews.swift */,
 				B1000000000000000000001D /* PrivacyInfo.xcprivacy */,
+				B1000000000000000000001E /* Views/ScreenshotRouteView.swift */,
 				B1000000000000000000000B /* Info.plist */,
 			);
 			path = YouJi;
@@ -282,6 +285,7 @@
 				A1000000000000000000001A /* Views/PlayCalendarView.swift in Sources */,
 				A1000000000000000000001B /* Services/ProductDataService.swift in Sources */,
 				A1000000000000000000001C /* Views/ProductViews.swift in Sources */,
+				A1000000000000000000001E /* Views/ScreenshotRouteView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

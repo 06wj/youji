@@ -276,6 +276,93 @@ final class YouJiDataTests: XCTestCase {
         XCTAssertEqual(snapshot.platform, .playStation)
     }
 
+    func testPlayTimelineBuildsChronologicalSnapshotChanges() {
+        let first = Calendar.current.startOfDay(for: Date(timeIntervalSince1970: 100))
+        let second = Calendar.current.date(byAdding: .day, value: 1, to: first)!
+        let third = Calendar.current.date(byAdding: .day, value: 2, to: first)!
+        let snapshots = [
+            PlaySnapshot(snapshotID: "first", gameID: "ps:a:game", accountID: "a", platform: .playStation, date: first, totalMinutes: 100, trophiesEarned: 1),
+            PlaySnapshot(snapshotID: "second", gameID: "ps:a:game", accountID: "a", platform: .playStation, date: second, totalMinutes: 160, trophiesEarned: 1),
+            PlaySnapshot(snapshotID: "third", gameID: "ps:a:game", accountID: "a", platform: .playStation, date: third, totalMinutes: 190, trophiesEarned: 3),
+        ]
+
+        let entries = PlayTimelineBuilder.entries(
+            snapshots: snapshots,
+            activities: [],
+            includedGameIDs: ["ps:a:game"]
+        )
+
+        XCTAssertEqual(entries.map(\.date), [second, third])
+        XCTAssertEqual(entries.map(\.addedMinutes), [60, 30])
+        XCTAssertEqual(entries.map(\.addedTrophies), [0, 2])
+    }
+
+    func testPlayHistoryChartScaleFocusesOnHighCumulativeValues() {
+        let changingDomain = PlayHistoryChartBuilder.yDomain(totalMinutes: [200 * 60, 215 * 60])
+        XCTAssertEqual(changingDomain.lowerBound, 197)
+        XCTAssertEqual(changingDomain.upperBound, 218)
+
+        let flatDomain = PlayHistoryChartBuilder.yDomain(totalMinutes: [200 * 60, 200 * 60])
+        XCTAssertEqual(flatDomain.lowerBound, 198)
+        XCTAssertEqual(flatDomain.upperBound, 202)
+    }
+
+    func testPlayHistoryAndTimelineMergeRecordsWithinOneDay() {
+        let day = Calendar.current.startOfDay(for: Date(timeIntervalSince1970: 100))
+        let baseline = Calendar.current.date(byAdding: .day, value: -1, to: day)!
+        let morning = day.addingTimeInterval(9 * 60 * 60)
+        let evening = day.addingTimeInterval(20 * 60 * 60)
+        let snapshots = [
+            PlaySnapshot(snapshotID: "baseline", gameID: "ps:a:game", accountID: "a", platform: .playStation, date: baseline, totalMinutes: 100, trophiesEarned: 0),
+            PlaySnapshot(snapshotID: "morning", gameID: "ps:a:game", accountID: "a", platform: .playStation, date: morning, totalMinutes: 130, trophiesEarned: 1),
+            PlaySnapshot(snapshotID: "evening", gameID: "ps:a:game", accountID: "a", platform: .playStation, date: evening, totalMinutes: 160, trophiesEarned: 2),
+        ]
+
+        let dailySnapshots = PlayHistoryChartBuilder.dailySnapshots(snapshots)
+        XCTAssertEqual(dailySnapshots.count, 2)
+        XCTAssertEqual(dailySnapshots.last?.snapshotID, "evening")
+
+        let entries = PlayTimelineBuilder.entries(
+            snapshots: snapshots,
+            activities: [],
+            includedGameIDs: ["ps:a:game"]
+        )
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries.first?.date, day)
+        XCTAssertEqual(entries.first?.addedMinutes, 60)
+        XCTAssertEqual(entries.first?.addedTrophies, 2)
+    }
+
+    func testPlayTimelinePrefersSwitchDailyActivityOverSnapshotChanges() {
+        let first = Date(timeIntervalSince1970: 100)
+        let second = Date(timeIntervalSince1970: 200)
+        let activity = DailyPlayActivity(
+            activityID: "switch:a:game:day",
+            gameID: "switch:a:game",
+            accountID: "a",
+            titleID: "game",
+            platform: .switchConsole,
+            day: second,
+            totalMinutes: 45
+        )
+        let snapshots = [
+            PlaySnapshot(gameID: "switch:a:game", accountID: "a", platform: .switchConsole, date: first, totalMinutes: 100, trophiesEarned: 0),
+            PlaySnapshot(gameID: "switch:a:game", accountID: "a", platform: .switchConsole, date: second, totalMinutes: 145, trophiesEarned: 0),
+        ]
+
+        let entries = PlayTimelineBuilder.entries(
+            snapshots: snapshots,
+            activities: [activity],
+            includedGameIDs: ["switch:a:game"]
+        )
+
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries.first?.gameID, "switch:a:game")
+        XCTAssertEqual(entries.first?.date, Calendar.current.startOfDay(for: second))
+        XCTAssertEqual(entries.first?.addedMinutes, 45)
+        XCTAssertEqual(entries.first?.source, .dailyActivity)
+    }
+
     func testDailyActivityIDIsSeparatedByAccountAndDay() throws {
         let firstDay = try XCTUnwrap(NintendoAPIClient.parsePlayedDay("2026-08-12"))
         let secondDay = try XCTUnwrap(NintendoAPIClient.parsePlayedDay("2026-08-13"))

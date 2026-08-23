@@ -35,7 +35,7 @@ struct ConnectPlayStationView: View {
                 ToolbarItem(placement: .topBarLeading) { Button("取消") { dismiss() } }
                 if showBrowser {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("已登录，读取") { credentialRequest += 1 }.fontWeight(.semibold)
+                        Button("登录完成") { credentialRequest += 1 }.fontWeight(.semibold)
                     }
                 }
             }
@@ -70,10 +70,10 @@ struct ConnectPlayStationView: View {
                 VStack(alignment: .leading, spacing: 15) {
                     Label("在 Sony 官方页面完成登录", systemImage: "lock.shield.fill")
                     Label("读取游戏名称、封面、总时长与最近游玩", systemImage: "clock.arrow.circlepath")
-                    Label("刷新令牌仅保存在本机 Keychain", systemImage: "iphone.and.arrow.forward")
+                    Label("登录信息仅保存在这台设备", systemImage: "iphone.and.arrow.forward")
                 }.font(.subheadline.weight(.semibold))
 
-                Text("进入页面后完成 PlayStation 登录，再点右上角“已登录，读取”。游迹会在同一个网页会话中读取登录凭据并立即换取访问令牌，不会读取或保存密码。")
+                Text("进入页面完成 PlayStation 登录后，点右上角“登录完成”。游迹不会读取或保存你的密码。")
                     .font(.footnote).foregroundStyle(YJColor.muted).lineSpacing(4)
 
                 Button { showBrowser = true } label: {

@@ -25,8 +25,8 @@ YouJi organizes the games you have actually played, the time you invested, and t
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/export.jpg" width="32%" alt="Generate a gaming profile by platform and depth of play">
-  <img src="docs/screenshots/ai-chat.jpg" width="32%" alt="Get replay recommendations grounded in your own game history">
+  <img src="docs/screenshots/export.png" width="32%" alt="Generate a gaming profile by platform and depth of play">
+  <img src="docs/screenshots/ai-chat.png" width="32%" alt="Get replay recommendations grounded in your own game history">
 </p>
 
 <p align="center">
@@ -34,9 +34,9 @@ YouJi organizes the games you have actually played, the time you invested, and t
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/overview.jpg" width="23%" alt="YouJi overview">
-  <img src="docs/screenshots/playstation.jpg" width="23%" alt="PlayStation games and trophies">
-  <img src="docs/screenshots/switch.jpg" width="23%" alt="Nintendo Switch seven-day activity">
+  <img src="docs/screenshots/overview.png" width="23%" alt="YouJi overview">
+  <img src="docs/screenshots/playstation.png" width="23%" alt="PlayStation games and trophies">
+  <img src="docs/screenshots/switch.png" width="23%" alt="Nintendo Switch seven-day activity">
 </p>
 
 ## It understands your history, not just your genres
@@ -59,12 +59,12 @@ Chats are saved locally and organized into easy-to-find topics. Continue an exis
 - **Trophies and platinums:** Revisit PlayStation trophy progress, completion rates, and every platinum you worked for.
 - **Recent activity:** Understand your Nintendo Switch rhythm through a focused seven-day view.
 - **Play calendar:** Keep exact Switch play dates and per-game minutes on device after each sync, even after they leave Nintendo's seven-day window.
-- **Long-term trends:** Turn synchronization snapshots into seven-day, 30-day, and annual changes in play time and trophies.
+- **Long-term trends:** Review seven-day, 30-day, and annual changes in play time and trophies, with calculation details available only when you ask for them.
 - **A focused but complete home:** Keep the cross-platform overview and full library, with small shortcuts inside the overview card for drill-down insights and Game Brain; plans move to the More menu, while Switch daily records stay in the Switch view.
 - **Searchable game archive:** Search by title or note, open a game timeline, and add favorites, visibility, status, and private notes.
 - **Account-aware history:** See which account is connected, inspect per-platform sync receipts, and reopen disconnected local archives without mixing accounts.
 - **A cleaner collection:** Keep meaningful games in focus while short trials and long-forgotten launches stay out of the way.
-- **Portable local data:** Export a complete JSON backup or CSV library, restore by merging, and remove an account archive or all local content when you choose.
+- **Portable local data:** Export a complete backup or game-library table, restore by merging, and remove an account archive or all local content when you choose.
 - **Built for the long term:** Sync when you choose, optionally enable a weekly local reminder, keep your covers and history on device, and let the library grow with you.
 
 ## Get started in three steps
@@ -118,7 +118,7 @@ The simulator is suitable for exploring the interface. Connecting real PlayStati
 
 - SwiftUI for the interface
 - SwiftData for game records, sync snapshots, and AI conversations
-- Swift Charts for Nintendo Switch activity
+- Swift Charts for per-game cumulative-time charts and Nintendo Switch activity
 - AuthenticationServices and WebKit for platform sign-in
 - Keychain Services for platform sessions and the user-provided AI API key
 - URLSession for platform sync and AI requests
@@ -144,7 +144,7 @@ docs/
 YouJiTests/                # Model, parsing, prompt, and persistence regression tests
 ```
 
-See the [product requirements](docs/PRD.md) for the current product scope, user journeys, screen map, and prioritized gaps. The [architecture notes](docs/ARCHITECTURE.md) describe the current data flow and platform sync design. Before making AI-assisted changes, read the [AI contributor guide](AGENTS.md) for product invariants, security boundaries, and verification steps.
+See the [product requirements](docs/PRD.md) for the current product scope, user journeys, screen map, and prioritized gaps. The [architecture notes](docs/ARCHITECTURE.md) describe the current data flow and platform sync design. Maintainers can refresh the native-resolution images with the [real-device screenshot workflow](docs/SCREENSHOT_WORKFLOW.md). Before making AI-assisted changes, read the [AI contributor guide](AGENTS.md) for product invariants, security boundaries, and verification steps.
 
 ### Platform API notes
 

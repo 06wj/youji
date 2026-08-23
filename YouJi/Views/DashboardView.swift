@@ -2,7 +2,7 @@ import Charts
 import SwiftData
 import SwiftUI
 
-private enum LibraryFilter: String, CaseIterable {
+enum LibraryFilter: String, CaseIterable {
     case all = "总览"
     case playStation = "PlayStation"
     case switchConsole = "Switch"
@@ -57,6 +57,10 @@ struct DashboardView: View {
     @State private var searchText = ""
     @State private var libraryScope: LibraryScope = .all
     @State private var syncingPlatform: GamePlatform?
+
+    init(initialFilter: LibraryFilter = .all) {
+        _filter = State(initialValue: initialFilter)
+    }
 
     private var currentAccountGames: [GameRecord] {
         if let selectedArchive {
@@ -309,12 +313,17 @@ struct DashboardView: View {
     }
 
     private func syncReceiptCard(_ receipt: PlatformSyncReceipt) -> some View {
-        HStack(spacing: 12) {
+        let highlights = [
+            receipt.addedMinutes > 0 ? "+\(format(minutes: receipt.addedMinutes))" : nil,
+            receipt.addedGames > 0 ? "新收录 \(receipt.addedGames) 款" : nil,
+            receipt.platform == .playStation && receipt.addedTrophies > 0 ? "新增 \(receipt.addedTrophies) 个奖杯" : nil
+        ].compactMap { $0 }
+        return HStack(spacing: 12) {
             Image(systemName: receipt.trophyFailures > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .foregroundStyle(receipt.trophyFailures > 0 ? YJColor.coral : YJColor.purple)
             VStack(alignment: .leading, spacing: 3) {
-                Text("上次 \(receipt.platform.shortName) 同步变化").font(.caption.bold())
-                Text("新增 \(receipt.addedGames) 款 · 更新 \(receipt.changedGames) 款 · +\(format(minutes: receipt.addedMinutes))")
+                Text("\(receipt.platform.shortName) 游玩记录已更新").font(.caption.bold())
+                Text(highlights.isEmpty ? "当前记录已是最新" : highlights.joined(separator: " · "))
                     .font(.caption2).foregroundStyle(YJColor.muted)
                 if receipt.trophyFailures > 0 {
                     Text("\(receipt.trophyFailures) 项奖杯数据将在下次同步重试")

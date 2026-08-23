@@ -45,9 +45,9 @@ struct ConnectNintendoView: View {
                 VStack(alignment: .leading, spacing: 15) {
                     Label("在 Nintendo 官方页面完成登录", systemImage: "lock.shield.fill")
                     Label("读取全部游戏总时长与近 7 天明细", systemImage: "clock.arrow.circlepath")
-                    Label("长期会话仅保存在本机 Keychain", systemImage: "iphone.and.arrow.forward")
+                    Label("登录信息仅保存在这台设备", systemImage: "iphone.and.arrow.forward")
                 }.font(.subheadline.weight(.semibold))
-                Text("Nintendo Account 需要已关联 Switch / Switch 2 的主机用户。该接入使用 Nintendo Store App 的非公开接口，可能因接口版本调整而需要更新。")
+                Text("Nintendo Account 需要已关联 Switch 或 Switch 2 的主机用户。")
                     .font(.footnote).foregroundStyle(YJColor.muted).lineSpacing(4)
                 Button {
                     oauth = .make()

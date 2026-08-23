@@ -22,8 +22,18 @@ struct YouJiApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if DEBUG
+            if let screenshotRoute = ScreenshotRoute.launchRoute {
+                ScreenshotRouteView(route: screenshotRoute)
+                    .preferredColorScheme(.light)
+            } else {
+                DashboardView()
+                    .preferredColorScheme(.light)
+            }
+            #else
             DashboardView()
                 .preferredColorScheme(.light)
+            #endif
         }
         .modelContainer(container)
     }

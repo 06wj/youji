@@ -142,7 +142,7 @@ struct SettingsView: View {
                         saved = true
                     } catch { errorMessage = error.localizedDescription }
                 } label: {
-                    Label("清除本机 AI API Key", systemImage: "key.slash")
+                    Label("清除这台设备上的 AI API Key", systemImage: "key.slash")
                         .font(.subheadline.bold())
                 }
             }
@@ -205,7 +205,7 @@ struct SettingsView: View {
     private var privacy: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "lock.shield.fill").foregroundStyle(YJColor.purple)
-            Text("API Key 只保存在本机 Keychain。发起分析或聊天时，只会向模型服务发送必要的游戏信息和当前对话。")
+            Text("API Key 只保存在这台设备。发起分析或聊天时，只会向模型服务发送必要的游戏信息和当前对话。")
                 .font(.caption).foregroundStyle(YJColor.muted).lineSpacing(3)
         }
         .padding(16)

@@ -21,6 +21,7 @@ struct AIChatView: View {
     @State private var showPlanEditor = false
     @State private var planTitleDraft = ""
     @State private var planNoteDraft = ""
+    @State private var showingConversationInfo = false
     @FocusState private var composerFocused: Bool
 
     init(conversation: AIConversation) {
@@ -37,13 +38,24 @@ struct AIChatView: View {
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    showingConversationInfo = true
+                } label: {
+                    Image(systemName: "info.circle")
+                }
+                .accessibilityLabel("对话说明")
                 Button {
                     showSettings = true
                 } label: {
                     Image(systemName: "gearshape.fill")
                 }
             }
+        }
+        .alert("对话说明", isPresented: $showingConversationInfo) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text("这段对话会沿用开始聊天时的 \(conversation.games.count) 款游戏记录。同步后如需使用最新记录，请新建对话。")
         }
         .sheet(isPresented: $showSettings, onDismiss: {
             hasAIConfiguration = AISettingsStore.isConfigured
@@ -110,10 +122,6 @@ struct AIChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 14) {
-                    Text("这段对话使用创建时冻结的 \(conversation.games.count) 款游戏；同步后新建对话可使用最新记录。")
-                        .font(.caption2).foregroundStyle(YJColor.muted)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 22)
                     if messages.isEmpty && !isSending {
                         emptyConversation
                     }

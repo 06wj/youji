@@ -61,7 +61,7 @@ struct PlayCalendarSection: View {
     }
 }
 
-private struct PlayCalendarView: View {
+struct PlayCalendarView: View {
     @Environment(\.dismiss) private var dismiss
     @Query private var activities: [DailyPlayActivity]
 
