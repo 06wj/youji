@@ -108,8 +108,8 @@ final class GameRecord {
 
     var resolvedTitleID: String {
         if !titleID.isEmpty { return titleID }
-        if applicationID.hasPrefix("ps:") { return String(applicationID.dropFirst(3)) }
-        if applicationID.hasPrefix("switch:") { return String(applicationID.dropFirst(7)) }
+        let prefix = (platform == .playStation ? "ps:" : "switch:") + (accountID.isEmpty ? "" : "\(accountID):")
+        if applicationID.hasPrefix(prefix) { return String(applicationID.dropFirst(prefix.count)) }
         return applicationID
     }
 }
@@ -204,7 +204,7 @@ enum AccountScope {
         return scopeKey.isEmpty ? nil : scopeKey
     }
 
-    private static func displayAccountID(
+    static func displayAccountID(
         for platform: GamePlatform,
         currentAccountID: String,
         games: [GameRecord]
@@ -283,7 +283,7 @@ final class DailyPlayActivity {
         self.accountID = accountID
         self.titleID = titleID
         self.platformRaw = platform.rawValue
-        let resolvedDayKey = Self.dayKey(for: day)
+        let resolvedDayKey = Self.dayKey(fromActivityID: activityID) ?? Self.dayKey(for: day)
         self.dayKey = resolvedDayKey
         self.day = Self.date(fromDayKey: resolvedDayKey) ?? Calendar.current.startOfDay(for: day)
         self.totalMinutes = totalMinutes
@@ -329,7 +329,9 @@ final class DailyPlayActivity {
     }
 
     static func dayKey(for day: Date, calendar: Calendar = .current) -> String {
-        let components = calendar.dateComponents([.year, .month, .day], from: day)
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        let components = gregorian.dateComponents([.year, .month, .day], from: day)
         return String(
             format: "%04d-%02d-%02d",
             components.year ?? 0,
@@ -339,9 +341,15 @@ final class DailyPlayActivity {
     }
 
     static func date(fromDayKey dayKey: String, calendar: Calendar = .current) -> Date? {
+        guard dayKey.count == 10 else { return nil }
         let parts = dayKey.split(separator: "-").compactMap { Int($0) }
-        guard parts.count == 3 else { return nil }
-        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+        guard parts.count == 3, (1...9999).contains(parts[0]),
+              (1...12).contains(parts[1]), (1...31).contains(parts[2]) else { return nil }
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        guard let date = gregorian.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])),
+              Self.dayKey(for: date, calendar: gregorian) == dayKey else { return nil }
+        return date
     }
 
     static func dayKey(fromActivityID activityID: String) -> String? {
@@ -433,5 +441,19 @@ final class SavedGamePlan {
         self.createdAt = createdAt
         self.updatedAt = createdAt
         self.isCompleted = isCompleted
+    }
+}
+
+/// The filter and game payload belong to the same explicit generation request.
+struct AIProfileRequest {
+    let accountScopeKey: String
+    let platformFilter: String
+    let minimumHours: Int
+    let games: [AIAnalysisGame]
+
+    func result(text: String) -> AIProfileResult {
+        AIProfileResult(accountScopeKey: accountScopeKey, platformFilter: platformFilter,
+                        minimumHours: minimumHours, text: text, gameCount: games.count,
+                        totalMinutes: games.reduce(0) { $0 + $1.totalMinutes })
     }
 }

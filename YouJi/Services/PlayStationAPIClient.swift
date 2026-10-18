@@ -37,7 +37,7 @@ actor PlayStationAPIClient {
         return PlayStationGamesPayload(
             accountID: accountID,
             accountName: "PlayStation Network",
-            games: normalizeGames(titles),
+            games: try normalizeGames(titles),
             titles: titles.map { PlayStationTitleIdentity(titleID: $0.titleID, lastPlayedAt: Self.parseDate($0.lastPlayedDateTime)) }
         )
     }
@@ -51,10 +51,13 @@ actor PlayStationAPIClient {
             stage: "按游戏 ID 读取奖杯"
         )
         guard !response.titles.isEmpty else { return nil }
-        let trophyTitles = response.titles.flatMap(\.trophyTitles)
+        let trophyTitles = response.titles.filter { $0.npTitleID == titleID }.flatMap(\.trophyTitles)
         guard !trophyTitles.isEmpty else { return nil }
         let defined = trophyTitles.reduce(PlayStationTrophyCounts.zero) { $0.adding($1.definedTrophies) }
         let earned = trophyTitles.reduce(PlayStationTrophyCounts.zero) { $0.adding($1.earnedTrophies) }
+        guard earned.bronze <= defined.bronze, earned.silver <= defined.silver,
+              earned.gold <= defined.gold, earned.platinum <= defined.platinum,
+              defined.total > 0 else { throw PlayStationSyncError.decode("奖杯计数不完整") }
         return PlayStationTrophyUpdate(
             titleID: titleID,
             earned: earned.total,
@@ -193,13 +196,13 @@ actor PlayStationAPIClient {
         return Data((components.percentEncodedQuery ?? "").utf8)
     }
 
-    private func normalizeGames(_ titles: [PlayStationTitle]) -> [SyncedGame] {
-        return titles.map { item in
+    private func normalizeGames(_ titles: [PlayStationTitle]) throws -> [SyncedGame] {
+        return try titles.map { item in
             return SyncedGame(
                 titleID: item.titleID,
                 platform: .playStation,
                 title: item.localizedName ?? item.name,
-                totalMinutes: Self.minutes(from: item.playDuration),
+                totalMinutes: try Self.minutes(from: item.playDuration),
                 imageURL: item.localizedImageURL ?? item.imageURL ?? "",
                 firstPlayedAt: Self.parseDate(item.firstPlayedDateTime),
                 lastPlayedAt: Self.parseDate(item.lastPlayedDateTime),
@@ -225,15 +228,23 @@ actor PlayStationAPIClient {
         throw PlayStationSyncError.missingAccountIdentity
     }
 
-    private static func minutes(from duration: String) -> Int {
-        let pattern = #"^P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: duration, range: NSRange(duration.startIndex..., in: duration)) else { return 0 }
-        func value(_ index: Int) -> Double {
-            guard let range = Range(match.range(at: index), in: duration) else { return 0 }
-            return Double(duration[range]) ?? 0
+    static func minutes(from duration: String) throws -> Int {
+        // Accept ISO day-only durations and fractional units as well as PS's usual PT form.
+        let pattern = #"^P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$"#
+        let value = duration.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let regex = try NSRegularExpression(pattern: pattern)
+        guard let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
+              (1...4).contains(where: { match.range(at: $0).location != NSNotFound }),
+              !value.hasSuffix("T") else { throw PlayStationSyncError.decode("无法读取游玩时长，已保留本地记录") }
+        func component(_ index: Int) -> Double {
+            guard let range = Range(match.range(at: index), in: value) else { return 0 }
+            return Double(value[range]) ?? .infinity
         }
-        return Int((value(1) * 1_440) + (value(2) * 60) + value(3) + (value(4) / 60))
+        let minutes = component(1) * 1_440 + component(2) * 60 + component(3) + component(4) / 60
+        guard minutes.isFinite, minutes >= 0, minutes <= Double(DataValidation.maximumMinutes) else {
+            throw PlayStationSyncError.decode("游玩时长超出可读取范围，已保留本地记录")
+        }
+        return Int(minutes)
     }
 
     private static func parseDate(_ value: String?) -> Date? {
@@ -289,7 +300,7 @@ struct PlayStationTrophySummary: Codable, Sendable {
         trophyLevel = values.flexibleString(forKey: .trophyLevel, default: "0")
         progress = values.flexibleInt(forKey: .progress)
         tier = values.flexibleInt(forKey: .tier)
-        earnedTrophies = (try? values.decode(PlayStationTrophyCounts.self, forKey: .earnedTrophies)) ?? .zero
+        earnedTrophies = try values.decode(PlayStationTrophyCounts.self, forKey: .earnedTrophies)
     }
 
     var total: Int {
@@ -327,17 +338,27 @@ struct PlayStationTrophyCounts: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        bronze = values.flexibleInt(forKey: .bronze)
-        silver = values.flexibleInt(forKey: .silver)
-        gold = values.flexibleInt(forKey: .gold)
-        platinum = values.flexibleInt(forKey: .platinum)
+        bronze = try values.requiredCount(forKey: .bronze)
+        silver = try values.requiredCount(forKey: .silver)
+        gold = try values.requiredCount(forKey: .gold)
+        platinum = try values.requiredCount(forKey: .platinum)
     }
 }
 
 private extension KeyedDecodingContainer {
+    func requiredCount(forKey key: Key) throws -> Int {
+        if let value = try? decode(Int.self, forKey: key), (0...1_000_000).contains(value) { return value }
+        if let text = try? decode(String.self, forKey: key),
+           let value = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+           (0...1_000_000).contains(value) { return value }
+        if let value = try? decode(Double.self, forKey: key), value.isFinite,
+           value.rounded(.towardZero) == value, (0...1_000_000).contains(value) { return Int(value) }
+        throw DecodingError.dataCorruptedError(forKey: key, in: self, debugDescription: "Invalid trophy count")
+    }
+
     func flexibleInt(forKey key: Key, default defaultValue: Int = 0) -> Int {
         if let value = try? decode(Int.self, forKey: key) { return value }
-        if let value = try? decode(Double.self, forKey: key) { return Int(value) }
+        if let value = try? decode(Double.self, forKey: key), value.isFinite, value >= 0, value < Double(Int.max) { return Int(value) }
         if let value = try? decode(String.self, forKey: key) { return Int(value) ?? defaultValue }
         return defaultValue
     }

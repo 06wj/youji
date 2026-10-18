@@ -84,6 +84,9 @@ The default configuration uses Celitech's OpenAI-compatible endpoint. You can re
 - The AI receives only the information needed for the analysis or conversation, never your platform credentials.
 - AI conversations are separated by the local account scope, personality results can be revisited and shared as image cards, and useful replies can be saved to a local play/replay list.
 - Complete backups never include platform credentials or the AI API key.
+- Backup v2 preserves unreadable conversation data and still imports v1 backups. Restore validates account identities before writing and can repair damaged conversation components from an older readable backup.
+- Failed writes leave the visible archive unchanged. Deleting, disconnecting, or restoring invalidates older in-flight requests so they cannot repopulate the archive.
+- If the database cannot open, a recovery screen lets you export its original files or restore a JSON backup into a new database while keeping the original. A raw recovery package preserves files for recovery work; it is not a JSON backup.
 
 Read the full [Privacy Policy](docs/PRIVACY_POLICY.md).
 

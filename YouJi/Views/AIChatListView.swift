@@ -75,10 +75,14 @@ struct AIChatListView: View {
                 if !legacy.isEmpty,
                    !accountScopeKey.isEmpty,
                    AccountScope.unambiguousArchiveScopeKey(for: allGames) == accountScopeKey {
-                    legacy.forEach { $0.accountScopeKey = accountScopeKey }
-                    do { try modelContext.save() }
-                    catch {
-                        modelContext.rollback()
+                    do {
+                        let ids = Set(legacy.map(\.id))
+                        try LocalPersistence.transaction(modelContext) { writer in
+                            for item in try writer.fetch(FetchDescriptor<AIConversation>()) where ids.contains(item.id) {
+                                item.accountScopeKey = accountScopeKey
+                            }
+                        }
+                    } catch {
                         persistenceError = error.localizedDescription
                     }
                 }
@@ -171,22 +175,21 @@ struct AIChatListView: View {
     private func createConversation() {
         guard !chatGames.isEmpty else { return }
         let conversation = AIConversation(accountScopeKey: accountScopeKey, games: chatGames)
-        modelContext.insert(conversation)
         do {
-            try modelContext.save()
+            try LocalPersistence.transaction(modelContext) { $0.insert(conversation) }
             path.append(conversation.id)
         } catch {
-            modelContext.rollback()
             persistenceError = error.localizedDescription
         }
     }
 
     private func deleteConversation() {
         guard let conversationToDelete else { return }
-        modelContext.delete(conversationToDelete)
-        do { try modelContext.save() }
+        LocalDataRevision.invalidate()
+        do { try LocalPersistence.transaction(modelContext) { writer in
+            writer.delete(try LocalPersistence.conversation(conversationToDelete.id, in: writer))
+        } }
         catch {
-            modelContext.rollback()
             persistenceError = error.localizedDescription
         }
         self.conversationToDelete = nil

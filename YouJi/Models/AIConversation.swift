@@ -28,6 +28,22 @@ final class AIConversation {
         self.gameContextData = Self.encode(games)
     }
 
+    func readMessages() throws -> [AIChatMessage] {
+        try JSONDecoder().decode([AIChatMessage].self, from: messagesData)
+    }
+
+    func readGames() throws -> [AIAnalysisGame] {
+        try JSONDecoder().decode([AIAnalysisGame].self, from: gameContextData)
+    }
+
+    var hasUnreadableContent: Bool {
+        (try? readMessages()) == nil || (try? readGames()) == nil
+    }
+
+    var canDiscardEmptyConversation: Bool {
+        !hasUnreadableContent && ((try? readMessages().isEmpty) == true)
+    }
+
     var messages: [AIChatMessage] {
         get { Self.decode([AIChatMessage].self, from: messagesData) ?? [] }
         set {
@@ -42,7 +58,7 @@ final class AIConversation {
     }
 
     var preview: String {
-        messages.last?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? "开始聊聊你的游戏"
+        hasUnreadableContent ? "内容暂时无法读取，原始记录已保留" : (messages.last?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? "开始聊聊你的游戏")
     }
 
     private static func encode<T: Encodable>(_ value: T) -> Data {

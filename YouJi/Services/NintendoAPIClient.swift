@@ -42,7 +42,18 @@ actor NintendoAPIClient {
             stage: "读取 Switch 游戏记录"
         )
         let resolvedUser = try await user
-        let normalized = try await Self.normalize(history: history)
+        let resolvedHistory = try await history
+        guard resolvedHistory.playHistories.allSatisfy({ DataValidation.minutes($0.totalPlayedMinutes) }),
+              resolvedHistory.recentPlayHistories.allSatisfy({ $0.dailyPlayHistories.allSatisfy { DataValidation.minutes($0.totalPlayedMinutes) } }) else {
+            throw NintendoSyncError.decode("游玩时长无法读取，已保留本地档案")
+        }
+        let normalized = Self.normalize(history: resolvedHistory)
+        guard !resolvedUser.id.isEmpty,
+              normalized.games.allSatisfy({ !$0.titleID.isEmpty && DataValidation.minutes($0.totalMinutes)
+                  && $0.weeklyMinutes.allSatisfy(DataValidation.minutes) }),
+              normalized.dailyActivities.allSatisfy({ DataValidation.minutes($0.totalMinutes) }) else {
+            throw NintendoSyncError.decode("游戏记录不完整，已保留本地档案")
+        }
         return NintendoSyncPayload(
             user: resolvedUser,
             games: normalized.games,

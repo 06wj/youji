@@ -34,6 +34,8 @@ struct AIAnalysisView: View {
 	@State private var analysisError: String?
 	@State private var copiedAnalysis = false
     @State private var showProfileHistory = false
+    @State private var analysisTask: Task<Void, Never>?
+    @State private var analysisRequestID: UUID?
 
     private let hourPresets = [1, 2, 10, 50]
 
@@ -108,6 +110,8 @@ struct AIAnalysisView: View {
 			}
 			.onChange(of: platform) { _, _ in resetAnalysis() }
 			.onChange(of: minimumHours) { _, _ in resetAnalysis() }
+            .onChange(of: accountScopeKey) { _, _ in resetAnalysis() }
+            .onDisappear { cancelAnalysis() }
         }
     }
 
@@ -355,50 +359,54 @@ struct AIAnalysisView: View {
 		(try? AttributedString(markdown: analysisText)) ?? AttributedString(analysisText)
 	}
 
-	private func generateAnalysis() {
-		let apiKey = AISettingsStore.apiKey
-		let model = AISettingsStore.modelName
-		guard !apiKey.isEmpty, !model.isEmpty else {
-			hasAIConfiguration = false
-			showSettings = true
-			return
-		}
-		let payload = analysisGames
-		isAnalyzing = true
-		analysisError = nil
-			Task {
-				do {
-					let result = try await AIAnalysisClient.shared.analyze(games: payload, apiKey: apiKey, model: model)
-	                let profile = AIProfileResult(
-	                    accountScopeKey: accountScopeKey,
-                    platformFilter: platform.rawValue,
-                    minimumHours: minimumHours,
-                    text: result,
-                    gameCount: payload.count,
-	                    totalMinutes: payload.reduce(0) { $0 + $1.totalMinutes }
-	                )
-	                modelContext.insert(profile)
-	                do {
-	                    try modelContext.save()
-	                    analysisText = result
-	                } catch {
-	                    modelContext.delete(profile)
-	                    throw error
-	                }
-			} catch is CancellationError {
-				// Leaving the view cancels work without presenting an error.
-			} catch {
-				analysisError = error.localizedDescription
-			}
-			isAnalyzing = false
-		}
-	}
+    private func generateAnalysis() {
+        let apiKey = AISettingsStore.apiKey
+        let model = AISettingsStore.modelName
+        guard !apiKey.isEmpty, !model.isEmpty else {
+            hasAIConfiguration = false
+            showSettings = true
+            return
+        }
+        cancelAnalysis()
+        let requestID = UUID()
+        analysisRequestID = requestID
+        let revision = LocalDataRevision.current
+        let request = AIProfileRequest(accountScopeKey: accountScopeKey, platformFilter: platform.rawValue,
+                                       minimumHours: minimumHours, games: analysisGames)
+        isAnalyzing = true
+        analysisError = nil
+        analysisTask = Task {
+            defer {
+                if analysisRequestID == requestID { cancelAnalysis() }
+            }
+            do {
+                let result = try await AIAnalysisClient.shared.analyze(games: request.games, apiKey: apiKey, model: model)
+                try LocalDataRevision.check(revision)
+                guard analysisRequestID == requestID else { return }
+                let profile = request.result(text: result)
+                try LocalPersistence.transaction(modelContext) { $0.insert(profile) }
+                analysisText = result
+            } catch {
+                guard analysisRequestID == requestID, revision == LocalDataRevision.current,
+                      !Task.isCancelled, !(error is CancellationError) else { return }
+                analysisError = error.localizedDescription
+            }
+        }
+    }
 
-	private func resetAnalysis() {
-		analysisText = ""
-		analysisError = nil
-		copiedAnalysis = false
-	}
+    private func cancelAnalysis() {
+        analysisTask?.cancel()
+        analysisTask = nil
+        analysisRequestID = nil
+        isAnalyzing = false
+    }
+
+    private func resetAnalysis() {
+        cancelAnalysis()
+        analysisText = ""
+        analysisError = nil
+        copiedAnalysis = false
+    }
 
     private var preview: some View {
         let previewGames = filteredGames

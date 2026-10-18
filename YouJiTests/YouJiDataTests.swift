@@ -1025,3 +1025,516 @@ private final class NintendoURLProtocolStub: URLProtocol, @unchecked Sendable {
 
     override func stopLoading() {}
 }
+
+extension YouJiDataTests {
+    @MainActor
+    private func safetyContainer() throws -> ModelContainer {
+        try ModelContainer(for: LocalDatabaseState.schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+    }
+
+    private func stubSession(body: String) -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [NintendoURLProtocolStub.self]
+        NintendoURLProtocolStub.handler = { request in
+            (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(body.utf8))
+        }
+        return URLSession(configuration: configuration)
+    }
+
+    func testTrophyCountsAcceptKnownNumberRepresentationsAndRejectUnknownValues() throws {
+        let counts = try JSONDecoder().decode(PlayStationTrophyCounts.self, from: Data(#"{"bronze":"12","silver":2.0,"gold":1,"platinum":" 0 "}"#.utf8))
+        XCTAssertEqual(counts.total, 15)
+        for body in [#"{"bronze":"unknown","silver":null}"#, #"{}"#,
+                     #"{"bronze":-1,"silver":0,"gold":0,"platinum":0}"#,
+                     #"{"bronze":0.5,"silver":0,"gold":0,"platinum":0}"#,
+                     #"{"bronze":1e100,"silver":0,"gold":0,"platinum":0}"#] {
+            XCTAssertThrowsError(try JSONDecoder().decode(PlayStationTrophyCounts.self, from: Data(body.utf8)))
+        }
+    }
+
+    func testDurationCompatibilityAndInvalidDurationNeverBecomesZero() throws {
+        for (value, expected) in [("PT2H30M", 150), ("P1D", 1440), ("P1DT2H", 1560),
+                                  ("PT90S", 1), ("PT1.5H", 90), ("PT0S", 0), (" pt1h ", 60)] {
+            XCTAssertEqual(try PlayStationAPIClient.minutes(from: value), expected)
+        }
+        for value in ["unavailable", "", "P", "PT", "P1DT", "PT-1H", "PT99999999999999999999999999999H"] {
+            XCTAssertThrowsError(try PlayStationAPIClient.minutes(from: value))
+        }
+    }
+
+    func testInvalidDurationRejectsEntirePlayedGamesPayload() async throws {
+        let session = stubSession(body: #"{"titles":[{"titleId":"g","name":"Game","playDuration":"unavailable"}],"totalItemCount":1}"#)
+        defer { NintendoURLProtocolStub.handler = nil }
+        let claims = try JSONSerialization.data(withJSONObject: ["sub": "test-account"]).base64URLEncodedString()
+        do {
+            _ = try await PlayStationAPIClient(session: session).loadGames(accessToken: "test.\(claims).test")
+            XCTFail("Invalid duration must not enter persistence")
+        } catch PlayStationSyncError.decode { }
+    }
+
+    func testTrophiesRequireMatchingTitleAndCompleteCounts() async throws {
+        let session = stubSession(body: #"{"titles":[{"npTitleId":"other","trophyTitles":[{"definedTrophies":{"bronze":5,"silver":0,"gold":0,"platinum":0},"earnedTrophies":{"bronze":4,"silver":0,"gold":0,"platinum":0}}]}]}"#)
+        defer { NintendoURLProtocolStub.handler = nil }
+        let result = try await PlayStationAPIClient(session: session).loadTrophy(titleID: "requested", accessToken: "test")
+        XCTAssertNil(result)
+    }
+
+    @MainActor
+    func testUnreadableConversationSurvivesBackupRestoreByteForByte() throws {
+        let source = try safetyContainer()
+        let conversation = AIConversation(accountScopeKey: "switch:a", games: [])
+        conversation.messagesData = Data(#"[{"role":"unrecognized","content":"recoverable text"}]"#.utf8)
+        conversation.gameContextData = Data("partial game context".utf8)
+        source.mainContext.insert(conversation)
+        try source.mainContext.save()
+        XCTAssertTrue(conversation.hasUnreadableContent)
+        XCTAssertFalse(conversation.canDiscardEmptyConversation)
+        let backup = try ProductDataService.backupData(modelContext: source.mainContext)
+        let target = try safetyContainer()
+        try ProductDataService.restore(data: backup, modelContext: target.mainContext)
+        let restored = try XCTUnwrap(target.mainContext.fetch(FetchDescriptor<AIConversation>()).first)
+        XCTAssertEqual(restored.messagesData, conversation.messagesData)
+        XCTAssertEqual(restored.gameContextData, conversation.gameContextData)
+        XCTAssertTrue(restored.hasUnreadableContent)
+        XCTAssertFalse(restored.canDiscardEmptyConversation)
+    }
+
+    func testLegacyChatMessagesHaveStableIDsWithoutLosingContent() throws {
+        let conversation = AIConversation(games: [])
+        conversation.messagesData = Data(#"[{"role":"user","content":"相同内容"},{"role":"user","content":"相同内容"}]"#.utf8)
+        XCTAssertFalse(conversation.hasUnreadableContent)
+        XCTAssertEqual(conversation.messages.map(\.content), ["相同内容", "相同内容"])
+        XCTAssertEqual(conversation.messages.map(\.id), conversation.messages.map(\.id))
+        XCTAssertEqual(Set(conversation.messages.map(\.id)).count, 2)
+        XCTAssertFalse(conversation.canDiscardEmptyConversation)
+    }
+
+    @MainActor
+    func testRestoreRejectsConflictingIdentityBeforeChangingAnyRecords() throws {
+        let container = try safetyContainer()
+        let game = GameRecord(applicationID: "switch:a:g", accountID: "a", titleID: "g", platform: .switchConsole, title: "Original", totalMinutes: 120)
+        container.mainContext.insert(game)
+        try container.mainContext.save()
+        let data = try ProductDataService.backupData(modelContext: container.mainContext)
+        var backup = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var games = try XCTUnwrap(backup["games"] as? [[String: Any]])
+        games[0]["accountID"] = "b"
+        games[0]["updatedAt"] = "2030-01-01T00:00:00Z"
+        games[0]["title"] = "Must not overwrite"
+        backup["games"] = games
+        XCTAssertThrowsError(try ProductDataService.restore(data: JSONSerialization.data(withJSONObject: backup), modelContext: container.mainContext))
+        XCTAssertEqual(game.accountID, "a")
+        XCTAssertEqual(game.title, "Original")
+        XCTAssertFalse(container.mainContext.hasChanges)
+    }
+
+    @MainActor
+    func testRestoreRejectsDuplicatesNegativeValuesAndBrokenReferences() throws {
+        let container = try safetyContainer()
+        let game = GameRecord(applicationID: "switch:a:g", accountID: "a", titleID: "g", platform: .switchConsole, title: "Game", totalMinutes: 120)
+        container.mainContext.insert(game)
+        try container.mainContext.save()
+        let data = try ProductDataService.backupData(modelContext: container.mainContext)
+        let original = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let games = try XCTUnwrap(original["games"] as? [[String: Any]])
+        for mutation in 0..<3 {
+            var backup = original
+            if mutation == 0 { backup["games"] = games + games }
+            if mutation == 1 {
+                var invalid = games
+                invalid[0]["totalMinutes"] = -1
+                backup["games"] = invalid
+            }
+            if mutation == 2 {
+                backup["snapshots"] = [["snapshotID": "bad-reference", "gameID": "switch:b:missing", "accountID": "a", "platform": "Switch", "date": "2026-01-01T00:00:00Z", "totalMinutes": 1, "trophiesEarned": 0]]
+            }
+            XCTAssertThrowsError(try ProductDataService.restore(data: JSONSerialization.data(withJSONObject: backup), modelContext: container.mainContext))
+            XCTAssertEqual(game.totalMinutes, 120)
+            XCTAssertFalse(container.mainContext.hasChanges)
+        }
+    }
+
+    @MainActor
+    func testVersionOneBackupWithMissingNewCollectionsAndUserFieldsStillRestores() throws {
+        let data = Data(#"{"formatVersion":1,"createdAt":"2026-01-01T00:00:00Z","games":[{"applicationID":"switch:game","platform":"Switch","title":"Legacy","totalMinutes":120,"updatedAt":"2026-01-01T00:00:00Z"}]}"#.utf8)
+        let target = try safetyContainer()
+        try ProductDataService.restore(data: data, modelContext: target.mainContext)
+        let game = try XCTUnwrap(target.mainContext.fetch(FetchDescriptor<GameRecord>()).first)
+        XCTAssertEqual(game.accountID, "")
+        XCTAssertEqual(game.titleID, "game")
+        XCTAssertEqual(game.weeklyMinutes, Array(repeating: 0, count: 7))
+        try LegacyRecordMigrator.migrate(platform: .switchConsole, accountID: "a", modelContext: target.mainContext)
+        XCTAssertEqual(game.applicationID, "switch:a:game")
+    }
+
+    @MainActor
+    func testRepeatedRestoreIsIdempotentAndKeepsFractionalEditTime() throws {
+        let source = try safetyContainer()
+        let game = GameRecord(applicationID: "switch:a:g", accountID: "a", titleID: "g", platform: .switchConsole, title: "Game")
+        game.personalNote = "Note"
+        game.userEditedAt = Date(timeIntervalSince1970: 100.125)
+        source.mainContext.insert(game)
+        source.mainContext.insert(PlaySnapshot(gameID: game.applicationID, accountID: "a", platform: .switchConsole, totalMinutes: 1, trophiesEarned: 0))
+        try source.mainContext.save()
+        let data = try ProductDataService.backupData(modelContext: source.mainContext)
+        let target = try safetyContainer()
+        try ProductDataService.restore(data: data, modelContext: target.mainContext)
+        try ProductDataService.restore(data: data, modelContext: target.mainContext)
+        XCTAssertEqual(try target.mainContext.fetchCount(FetchDescriptor<GameRecord>()), 1)
+        XCTAssertEqual(try target.mainContext.fetchCount(FetchDescriptor<PlaySnapshot>()), 1)
+        XCTAssertEqual(try target.mainContext.fetch(FetchDescriptor<GameRecord>()).first?.userEditedAt, game.userEditedAt)
+    }
+
+    @MainActor
+    func testFailedDeleteAndRestoreLeaveNoPendingMutations() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("test.store")
+        do {
+            let writable = try ModelContainer(for: LocalDatabaseState.schema, configurations: ModelConfiguration(url: url))
+            writable.mainContext.insert(GameRecord(applicationID: "switch:a:g", accountID: "a", titleID: "g", platform: .switchConsole, title: "Original"))
+            try writable.mainContext.save()
+        }
+        let readOnly = try ModelContainer(for: LocalDatabaseState.schema, configurations: ModelConfiguration(url: url, allowsSave: false))
+        let context = readOnly.mainContext
+        XCTAssertThrowsError(try ProductDataService.deleteArchive(platform: .switchConsole, accountID: "a", modelContext: context))
+        XCTAssertFalse(context.hasChanges)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<GameRecord>()).map(\.applicationID), ["switch:a:g"])
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<GameRecord>()), 1)
+        let source = try safetyContainer()
+        source.mainContext.insert(GameRecord(applicationID: "switch:b:other", accountID: "b", titleID: "other", platform: .switchConsole, title: "New"))
+        try source.mainContext.save()
+        XCTAssertThrowsError(try ProductDataService.restore(data: ProductDataService.backupData(modelContext: source.mainContext), modelContext: context))
+        XCTAssertFalse(context.hasChanges)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<GameRecord>()).map(\.applicationID), ["switch:a:g"])
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<GameRecord>()), 1)
+    }
+
+    @MainActor
+    func testFailedBatchDoesNotRollbackPreviouslyEditedNotes() throws {
+        let container = try safetyContainer()
+        let game = GameRecord(applicationID: "switch:a:g", accountID: "a", titleID: "g", platform: .switchConsole, title: "Game")
+        container.mainContext.insert(game)
+        try container.mainContext.save()
+        game.personalNote = "Unrelated unsaved note"
+        XCTAssertThrowsError(try LocalPersistence.transaction(container.mainContext) { writer in
+            let stored = try XCTUnwrap(writer.fetch(FetchDescriptor<GameRecord>()).first)
+            writer.delete(stored)
+            throw CocoaError(.fileReadUnknown)
+        })
+        XCTAssertEqual(game.personalNote, "Unrelated unsaved note")
+        XCTAssertEqual(try container.mainContext.fetchCount(FetchDescriptor<GameRecord>()), 1)
+        XCTAssertFalse(container.mainContext.hasChanges)
+    }
+
+    @MainActor
+    func testLegacyMergeDoesNotAdvanceUserEditDateToPlatformSyncDate() throws {
+        let container = try safetyContainer()
+        let legacy = GameRecord(applicationID: "switch:g", platform: .switchConsole, title: "Game")
+        legacy.updatedAt = Date(timeIntervalSince1970: 100)
+        legacy.personalNote = "Old note"
+        let current = GameRecord(applicationID: "switch:a:g", accountID: "a", titleID: "g", platform: .switchConsole, title: "Game")
+        current.updatedAt = Date(timeIntervalSince1970: 300)
+        container.mainContext.insert(legacy)
+        container.mainContext.insert(current)
+        try container.mainContext.save()
+        try LegacyRecordMigrator.migrate(platform: .switchConsole, accountID: "a", modelContext: container.mainContext)
+        XCTAssertEqual(current.userEditedAt, Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(current.updatedAt, Date(timeIntervalSince1970: 300))
+    }
+
+    @MainActor
+    func testRevisionRejectsPendingWritesAfterDeleteAndRestore() async throws {
+        let container = try safetyContainer()
+        let backup = try ProductDataService.backupData(modelContext: container.mainContext)
+        let beforeRestore = LocalDataRevision.current
+        try ProductDataService.restore(data: backup, modelContext: container.mainContext)
+        XCTAssertThrowsError(try LocalDataRevision.check(beforeRestore))
+        let beforeDelete = LocalDataRevision.current
+        try await ProductDataService.deleteAllLocalData(modelContext: container.mainContext)
+        XCTAssertThrowsError(try LocalDataRevision.check(beforeDelete))
+        XCTAssertNoThrow(try LocalDataRevision.check(LocalDataRevision.current))
+    }
+
+    func testFrozenAnalysisFilterStaysWithItsGamePayload() {
+        let request = AIProfileRequest(accountScopeKey: "switch:a", platformFilter: "Switch", minimumHours: 1,
+                                       games: [AIAnalysisGame(platform: "NS", title: "Game", totalMinutes: 120, trophyRatio: nil)])
+        let result = request.result(text: "Analysis")
+        XCTAssertEqual(result.platformFilter, "Switch")
+        XCTAssertEqual(result.minimumHours, 1)
+        XCTAssertEqual(result.accountScopeKey, "switch:a")
+        XCTAssertEqual(result.totalMinutes, 120)
+    }
+
+    func testSingleRestoredAccountIsAlsoUsedByCalendar() {
+        let game = GameRecord(applicationID: "switch:a:g", accountID: "a", titleID: "g", platform: .switchConsole, title: "Game")
+        XCTAssertEqual(AccountScope.displayAccountID(for: .switchConsole, currentAccountID: "", games: [game]), "a")
+        let other = GameRecord(applicationID: "switch:b:g", accountID: "b", titleID: "g", platform: .switchConsole, title: "Other")
+        XCTAssertNil(AccountScope.displayAccountID(for: .switchConsole, currentAccountID: "", games: [game, other]))
+    }
+
+    func testDayKeysRejectImpossibleDatesAndIgnoreSystemCalendarEra() throws {
+        XCTAssertNil(DailyPlayActivity.date(fromDayKey: "2026-02-31"))
+        XCTAssertNil(DailyPlayActivity.date(fromDayKey: "2026-13-01"))
+        var calendar = Calendar(identifier: .buddhist)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let date = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-18T00:00:00Z"))
+        XCTAssertEqual(DailyPlayActivity.dayKey(for: date, calendar: calendar), "2026-10-18")
+        XCTAssertEqual(DailyPlayActivity.date(fromDayKey: "2026-10-18", calendar: calendar), date)
+    }
+
+    @MainActor
+    func testUnreadableStoreCanBeExportedAndRecoveredWithoutReplacingOriginal() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("default.store")
+        let bytes = Data("not a valid SQLite database; preserve these original bytes".utf8)
+        try bytes.write(to: url)
+        let state = LocalDatabaseState(storeURL: url)
+        XCTAssertNil(state.container)
+        XCTAssertNotNil(state.failure)
+        XCTAssertNoThrow(try state.rawArchive())
+        XCTAssertThrowsError(try state.recover(from: Data("invalid backup".utf8)))
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+        let source = try safetyContainer()
+        source.mainContext.insert(GameRecord(applicationID: "switch:a:g", accountID: "a", titleID: "g", platform: .switchConsole, title: "Recovered"))
+        try source.mainContext.save()
+        try state.recover(from: ProductDataService.backupData(modelContext: source.mainContext))
+        let restored = try XCTUnwrap(state.container)
+        XCTAssertEqual(try restored.mainContext.fetchCount(FetchDescriptor<GameRecord>()), 1)
+        XCTAssertNotEqual(state.storeURL, url)
+        let nextLaunch = LocalDatabaseState(storeURL: url)
+        XCTAssertEqual(nextLaunch.storeURL, state.storeURL)
+        XCTAssertNotNil(nextLaunch.container)
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+        let reopened = try ModelContainer(for: LocalDatabaseState.schema, configurations: ModelConfiguration(url: state.storeURL))
+        XCTAssertEqual(try reopened.mainContext.fetch(FetchDescriptor<GameRecord>()).first?.title, "Recovered")
+    }
+}
+
+private final class DeferredResponseGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: [@Sendable () -> Void] = []
+    var isWaiting: Bool { lock.withLock { !pending.isEmpty } }
+    func enqueue(_ response: @escaping @Sendable () -> Void) { lock.withLock { pending.append(response) } }
+    func release() {
+        let responses = lock.withLock { let values = pending; pending.removeAll(); return values }
+        responses.forEach { $0() }
+    }
+}
+
+private final class DeferredNintendoProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var gate: DeferredResponseGate?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let body: String
+        switch request.url?.path {
+        case "/connect/1.0.0/api/session_token": body = #"{"session_token":"test-placeholder"}"#
+        case "/connect/1.0.0/api/token": body = #"{"access_token":"test-placeholder","expires_in":900}"#
+        case "/2.0.0/users/me": body = #"{"id":"pending-account","nickname":"Test"}"#
+        case "/api/v2.0/users/me/play_histories":
+            body = #"{"playHistories":[{"titleId":"g","titleName":"Stale response","imageUrl":"","firstPlayedAt":"2026-01-01","lastPlayedAt":"2026-01-01","totalPlayedMinutes":120}],"recentPlayHistories":[]}"#
+        default:
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let respond: @Sendable () -> Void = { [self] in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(body.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        if request.url?.path == "/api/v2.0/users/me/play_histories", let gate = Self.gate {
+            gate.enqueue(respond)
+        } else { respond() }
+    }
+    override func stopLoading() {}
+}
+
+extension YouJiDataTests {
+    @MainActor
+    func testPendingAuthorizationCannotWriteAfterDeleteOrRestore() async throws {
+        for restoreInsteadOfDelete in [false, true] {
+            let gate = DeferredResponseGate()
+            DeferredNintendoProtocol.gate = gate
+            defer { gate.release(); DeferredNintendoProtocol.gate = nil }
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [DeferredNintendoProtocol.self]
+            let session = URLSession(configuration: configuration)
+            let coordinator = SyncCoordinator(nintendoAPI: NintendoAPIClient(session: session))
+            let container = try safetyContainer()
+            let original = GameRecord(applicationID: "switch:a:original", accountID: "a", titleID: "original", platform: .switchConsole, title: "Local", totalMinutes: 60)
+            container.mainContext.insert(original)
+            try container.mainContext.save()
+            let backup = try ProductDataService.backupData(modelContext: container.mainContext)
+            let operation = Task {
+                await coordinator.finishAuthorization(code: "test", verifier: "test", modelContext: container.mainContext)
+            }
+            for _ in 0..<300 {
+                if gate.isWaiting { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard gate.isWaiting else { operation.cancel(); XCTFail("Stub request never reached the gate"); return }
+            if restoreInsteadOfDelete {
+                try ProductDataService.restore(data: backup, modelContext: container.mainContext)
+            } else {
+                try await ProductDataService.deleteAllLocalData(modelContext: container.mainContext)
+            }
+            gate.release()
+            await operation.value
+            let games = try container.mainContext.fetch(FetchDescriptor<GameRecord>())
+            XCTAssertEqual(games.map(\.applicationID), restoreInsteadOfDelete ? ["switch:a:original"] : [])
+            XCTAssertFalse(coordinator.isSyncing)
+            XCTAssertNil(coordinator.errorMessage)
+            XCTAssertFalse(container.mainContext.hasChanges)
+        }
+    }
+}
+
+// A real earlier on-disk entity shape, before userEditedAt existed. Keeping the
+// entity name/attributes verifies SQLite migration rather than an in-memory clone.
+private enum BeforeUserEditDate: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(1, 0, 0) }
+    static var models: [any PersistentModel.Type] { [GameRecord.self] }
+
+    @Model final class GameRecord {
+        @Attribute(.unique) var applicationID: String
+        var accountID: String = ""
+        var titleID: String = ""
+        var platformRaw: String = "Switch"
+        var title: String
+        var totalMinutes: Int
+        var imageURL: String
+        var firstPlayedAt: Date?
+        var lastPlayedAt: Date?
+        var weeklyMinutesData: Data
+        var trophiesEarned: Int = 0
+        var trophiesDefined: Int = 0
+        var platinumTrophiesEarned: Int = 0
+        var trophiesSyncedAt: Date?
+        var updatedAt: Date
+        var isFavorite: Bool = false
+        var isManuallyHidden: Bool = false
+        var isPinnedVisible: Bool = false
+        var personalNote: String = ""
+        var playStatusRaw: String = "玩过"
+
+        init() {
+            applicationID = "switch:a:legacy"
+            accountID = "a"
+            titleID = "legacy"
+            title = "Old on-disk game"
+            totalMinutes = 120
+            imageURL = ""
+            weeklyMinutesData = Data("[0,0,0,0,0,0,30]".utf8)
+            updatedAt = Date(timeIntervalSince1970: 100)
+            personalNote = "Preserve an earlier version's note"
+            isFavorite = true
+        }
+    }
+}
+
+extension YouJiDataTests {
+    @MainActor
+    func testEarlierSQLiteSchemaMigratesWithoutLosingUserData() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("legacy.store")
+        do {
+            let schema = Schema(versionedSchema: BeforeUserEditDate.self)
+            let old = try ModelContainer(for: schema, configurations: ModelConfiguration(url: url))
+            old.mainContext.insert(BeforeUserEditDate.GameRecord())
+            try old.mainContext.save()
+        }
+        let current = try ModelContainer(for: LocalDatabaseState.schema, configurations: ModelConfiguration(url: url))
+        let game = try XCTUnwrap(current.mainContext.fetch(FetchDescriptor<GameRecord>()).first)
+        XCTAssertEqual(game.applicationID, "switch:a:legacy")
+        XCTAssertEqual(game.personalNote, "Preserve an earlier version's note")
+        XCTAssertTrue(game.isFavorite)
+        XCTAssertEqual(game.totalMinutes, 120)
+        XCTAssertEqual(game.weeklyMinutes.last, 30)
+        XCTAssertEqual(game.resolvedUserEditedAt, Date(timeIntervalSince1970: 100))
+    }
+
+    @MainActor
+    func testOlderReadableBackupRepairsOnlyDamagedConversationComponents() throws {
+        let source = try safetyContainer()
+        let old = AIConversation(createdAt: Date(timeIntervalSince1970: 100), games: [
+            AIAnalysisGame(platform: "NS", title: "Game", totalMinutes: 120, trophyRatio: nil)
+        ])
+        old.messages = [AIChatMessage(role: .user, content: "Old message")]
+        old.updatedAt = Date(timeIntervalSince1970: 100)
+        source.mainContext.insert(old)
+        try source.mainContext.save()
+        let backup = try ProductDataService.backupData(modelContext: source.mainContext)
+        let target = try safetyContainer()
+        let damaged = AIConversation(id: old.id, games: [])
+        damaged.messages = [AIChatMessage(role: .user, content: "Newer readable message")]
+        damaged.gameContextData = Data("damaged".utf8)
+        damaged.updatedAt = Date(timeIntervalSince1970: 200)
+        target.mainContext.insert(damaged)
+        try target.mainContext.save()
+        try ProductDataService.restore(data: backup, modelContext: target.mainContext)
+        XCTAssertEqual(damaged.messages.map(\.content), ["Newer readable message"])
+        XCTAssertEqual(damaged.games.map(\.title), ["Game"])
+        XCTAssertFalse(damaged.hasUnreadableContent)
+    }
+
+    @MainActor
+    func testUnreadableBackupDoesNotReplaceReadableLocalMessages() throws {
+        let source = try safetyContainer()
+        let bad = AIConversation(games: [])
+        bad.messagesData = Data("damaged".utf8)
+        bad.updatedAt = Date(timeIntervalSince1970: 300)
+        source.mainContext.insert(bad)
+        try source.mainContext.save()
+        let target = try safetyContainer()
+        let local = AIConversation(id: bad.id, games: [])
+        local.messages = [AIChatMessage(role: .user, content: "Keep me")]
+        local.updatedAt = Date(timeIntervalSince1970: 100)
+        target.mainContext.insert(local)
+        try target.mainContext.save()
+        try ProductDataService.restore(data: ProductDataService.backupData(modelContext: source.mainContext), modelContext: target.mainContext)
+        XCTAssertEqual(local.messages.map(\.content), ["Keep me"])
+        XCTAssertFalse(local.hasUnreadableContent)
+    }
+
+    @MainActor
+    func testBackupPreservesOrphanHistoryWithConsistentIdentity() throws {
+        let source = try safetyContainer()
+        source.mainContext.insert(PlaySnapshot(gameID: "switch:a:missing-game", accountID: "a", platform: .switchConsole, totalMinutes: 120, trophiesEarned: 0))
+        try source.mainContext.save()
+        let target = try safetyContainer()
+        try ProductDataService.restore(data: ProductDataService.backupData(modelContext: source.mainContext), modelContext: target.mainContext)
+        XCTAssertEqual(try target.mainContext.fetchCount(FetchDescriptor<PlaySnapshot>()), 1)
+    }
+}
+
+extension YouJiDataTests {
+    @MainActor
+    func testInjectedSaveFailureRollsBackInsertUpdateAndDelete() throws {
+        let container = try safetyContainer()
+        let game = GameRecord(applicationID: "switch:a:g", accountID: "a", titleID: "g", platform: .switchConsole, title: "Original", totalMinutes: 120)
+        container.mainContext.insert(game)
+        try container.mainContext.save()
+        for operation in 0..<3 {
+            XCTAssertThrowsError(try LocalPersistence.transaction(container.mainContext, save: { _ in
+                throw CocoaError(.fileWriteOutOfSpace)
+            }) { writer in
+                let record = try XCTUnwrap(writer.fetch(FetchDescriptor<GameRecord>()).first)
+                if operation == 0 { writer.delete(record) }
+                if operation == 1 { record.totalMinutes = 0; record.personalNote = "Must roll back" }
+                if operation == 2 { writer.insert(GameRecord(applicationID: "switch:a:new", accountID: "a", titleID: "new", platform: .switchConsole, title: "New")) }
+            })
+            let stored = try container.mainContext.fetch(FetchDescriptor<GameRecord>())
+            XCTAssertEqual(stored.map(\.applicationID), ["switch:a:g"])
+            XCTAssertEqual(stored.first?.totalMinutes, 120)
+            XCTAssertEqual(stored.first?.personalNote, "")
+            XCTAssertFalse(container.mainContext.hasChanges)
+        }
+    }
+}

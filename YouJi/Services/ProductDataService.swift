@@ -69,6 +69,8 @@ struct BackupConversation: Codable {
     let accountScopeKey: String
     let messages: [AIChatMessage]
     let games: [AIAnalysisGame]
+    var rawMessagesData: Data? = nil
+    var rawGameContextData: Data? = nil
 }
 
 struct BackupProfile: Codable {
@@ -159,7 +161,9 @@ enum ProductDataService {
                 titleGeneratedAt: $0.titleGeneratedAt,
                 accountScopeKey: $0.accountScopeKey,
                 messages: $0.messages,
-                games: $0.games
+                games: $0.games,
+                rawMessagesData: (try? $0.readMessages()) == nil ? $0.messagesData : nil,
+                rawGameContextData: (try? $0.readGames()) == nil ? $0.gameContextData : nil
             )
         }
         let profiles = try modelContext.fetch(FetchDescriptor<AIProfileResult>()).map {
@@ -186,7 +190,7 @@ enum ProductDataService {
             )
         }
         return YouJiBackup(
-            formatVersion: 1,
+            formatVersion: 2,
             createdAt: .now,
             games: games,
             snapshots: snapshots,
@@ -200,179 +204,198 @@ enum ProductDataService {
     static func backupData(modelContext: ModelContext) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(date.ISO8601Format(.init(includingFractionalSeconds: true)))
+        }
         return try encoder.encode(makeBackup(modelContext: modelContext))
     }
 
     @discardableResult
     static func restore(data: Data, modelContext: ModelContext) throws -> ProductRestoreSummary {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let value = try decoder.singleValueContainer().decode(String.self)
+            guard let date = NintendoAPIClient.parseDate(value) else {
+                throw ProductDataError.invalidBackup("日期格式无法读取")
+            }
+            return date
+        }
         let backup = try decoder.decode(YouJiBackup.self, from: data)
-        guard backup.formatVersion == 1 else { throw ProductDataError.unsupportedBackup }
+        guard (1...2).contains(backup.formatVersion) else { throw ProductDataError.unsupportedBackup }
+        try validate(backup, modelContext: modelContext)
+        LocalDataRevision.invalidate()
+        return try LocalPersistence.transaction(modelContext) { modelContext in
 
-        do {
-
-        let existingGames = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<GameRecord>()).map { ($0.applicationID, $0) })
-        for item in backup.games {
-            let local = existingGames[item.applicationID]
-            let game = local ?? GameRecord(
-                applicationID: item.applicationID,
-                accountID: item.accountID,
-                titleID: item.titleID,
-                platform: item.platform,
-                title: item.title
-            )
-            let localUserEditedAt = game.resolvedUserEditedAt
-            if local == nil || game.updatedAt <= item.updatedAt {
-                game.accountID = item.accountID
-                game.titleID = item.titleID
-                game.platform = item.platform
-                game.title = item.title
-                game.totalMinutes = item.totalMinutes
-                game.imageURL = item.imageURL
-                game.firstPlayedAt = item.firstPlayedAt
-                game.lastPlayedAt = item.lastPlayedAt
-                game.weeklyMinutes = item.weeklyMinutes
-                game.trophiesEarned = item.trophiesEarned
-                game.trophiesDefined = item.trophiesDefined
-                game.platinumTrophiesEarned = item.platinumTrophiesEarned
-                game.trophiesSyncedAt = item.trophiesSyncedAt
-                game.updatedAt = item.updatedAt
+            let existingGames = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<GameRecord>()).map { ($0.applicationID, $0) })
+            for item in backup.games {
+                let local = existingGames[item.applicationID]
+                let game = local ?? GameRecord(
+                    applicationID: item.applicationID,
+                    accountID: item.accountID,
+                    titleID: item.titleID,
+                    platform: item.platform,
+                    title: item.title
+                )
+                let localUserEditedAt = game.resolvedUserEditedAt
+                if local == nil || game.updatedAt <= item.updatedAt {
+                    game.accountID = item.accountID
+                    game.titleID = item.titleID
+                    game.platform = item.platform
+                    game.title = item.title
+                    game.totalMinutes = item.totalMinutes
+                    game.imageURL = item.imageURL
+                    game.firstPlayedAt = item.firstPlayedAt
+                    game.lastPlayedAt = item.lastPlayedAt
+                    game.weeklyMinutes = item.weeklyMinutes
+                    game.trophiesEarned = item.trophiesEarned
+                    game.trophiesDefined = item.trophiesDefined
+                    game.platinumTrophiesEarned = item.platinumTrophiesEarned
+                    game.trophiesSyncedAt = item.trophiesSyncedAt
+                    game.updatedAt = item.updatedAt
+                }
+                let backupHasCustomization = item.isFavorite
+                    || item.isManuallyHidden
+                    || item.isPinnedVisible
+                    || !item.personalNote.isEmpty
+                    || item.playStatus != .played
+                let importedUserEditedAt = item.userEditedAt
+                    ?? (backupHasCustomization ? item.updatedAt : .distantPast)
+                if local == nil || localUserEditedAt <= importedUserEditedAt {
+                    game.isFavorite = item.isFavorite
+                    game.isManuallyHidden = item.isManuallyHidden
+                    game.isPinnedVisible = item.isPinnedVisible
+                    game.personalNote = item.personalNote
+                    game.playStatus = item.playStatus
+                    game.userEditedAt = importedUserEditedAt
+                }
+                if local == nil { modelContext.insert(game) }
             }
-            let backupHasCustomization = item.isFavorite
-                || item.isManuallyHidden
-                || item.isPinnedVisible
-                || !item.personalNote.isEmpty
-                || item.playStatus != .played
-            let importedUserEditedAt = item.userEditedAt
-                ?? (backupHasCustomization ? item.updatedAt : .distantPast)
-            if local == nil || localUserEditedAt <= importedUserEditedAt {
-                game.isFavorite = item.isFavorite
-                game.isManuallyHidden = item.isManuallyHidden
-                game.isPinnedVisible = item.isPinnedVisible
-                game.personalNote = item.personalNote
-                game.playStatus = item.playStatus
-                game.userEditedAt = importedUserEditedAt
+
+            let snapshotIDs = Set(try modelContext.fetch(FetchDescriptor<PlaySnapshot>()).map(\.snapshotID))
+            for item in backup.snapshots where !snapshotIDs.contains(item.snapshotID) {
+                modelContext.insert(PlaySnapshot(
+                    snapshotID: item.snapshotID,
+                    gameID: item.gameID,
+                    accountID: item.accountID,
+                    platform: item.platform,
+                    date: item.date,
+                    totalMinutes: item.totalMinutes,
+                    trophiesEarned: item.trophiesEarned
+                ))
             }
-            if local == nil { modelContext.insert(game) }
-        }
 
-        let snapshotIDs = Set(try modelContext.fetch(FetchDescriptor<PlaySnapshot>()).map(\.snapshotID))
-        for item in backup.snapshots where !snapshotIDs.contains(item.snapshotID) {
-            modelContext.insert(PlaySnapshot(
-                snapshotID: item.snapshotID,
-                gameID: item.gameID,
-                accountID: item.accountID,
-                platform: item.platform,
-                date: item.date,
-                totalMinutes: item.totalMinutes,
-                trophiesEarned: item.trophiesEarned
-            ))
-        }
-
-        let existingActivities = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<DailyPlayActivity>()).map { ($0.activityID, $0) })
-        for item in backup.dailyActivities {
-            if let local = existingActivities[item.activityID], local.updatedAt > item.updatedAt {
-                continue
+            let existingActivities = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<DailyPlayActivity>()).map { ($0.activityID, $0) })
+            for item in backup.dailyActivities {
+                if let local = existingActivities[item.activityID], local.updatedAt > item.updatedAt {
+                    continue
+                }
+                let activity = existingActivities[item.activityID] ?? DailyPlayActivity(
+                    activityID: item.activityID,
+                    gameID: item.gameID,
+                    accountID: item.accountID,
+                    titleID: item.titleID,
+                    platform: item.platform,
+                    day: item.day,
+                    totalMinutes: item.totalMinutes
+                )
+                activity.gameID = item.gameID
+                activity.accountID = item.accountID
+                activity.titleID = item.titleID
+                activity.platformRaw = item.platform.rawValue
+                activity.dayKey = item.dayKey
+                    ?? DailyPlayActivity.dayKey(fromActivityID: item.activityID)
+                    ?? DailyPlayActivity.dayKey(for: item.day)
+                activity.day = DailyPlayActivity.date(fromDayKey: activity.dayKey) ?? item.day
+                activity.totalMinutes = item.totalMinutes
+                activity.updatedAt = item.updatedAt
+                if existingActivities[item.activityID] == nil { modelContext.insert(activity) }
             }
-            let activity = existingActivities[item.activityID] ?? DailyPlayActivity(
-                activityID: item.activityID,
-                gameID: item.gameID,
-                accountID: item.accountID,
-                titleID: item.titleID,
-                platform: item.platform,
-                day: item.day,
-                totalMinutes: item.totalMinutes
-            )
-            activity.gameID = item.gameID
-            activity.accountID = item.accountID
-            activity.titleID = item.titleID
-            activity.platformRaw = item.platform.rawValue
-            activity.dayKey = item.dayKey
-                ?? DailyPlayActivity.dayKey(fromActivityID: item.activityID)
-                ?? DailyPlayActivity.dayKey(for: item.day)
-            activity.day = DailyPlayActivity.date(fromDayKey: activity.dayKey) ?? item.day
-            activity.totalMinutes = item.totalMinutes
-            activity.updatedAt = item.updatedAt
-            if existingActivities[item.activityID] == nil { modelContext.insert(activity) }
-        }
 
-        let existingConversations = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<AIConversation>()).map { ($0.id, $0) })
-        for item in backup.conversations {
-            if let local = existingConversations[item.id], local.updatedAt > item.updatedAt {
-                continue
+            let existingConversations = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<AIConversation>()).map { ($0.id, $0) })
+            for item in backup.conversations {
+                let local = existingConversations[item.id]
+                let imported = AIConversation(id: item.id, title: item.title, createdAt: item.createdAt,
+                                              accountScopeKey: item.accountScopeKey, games: item.games)
+                imported.messages = item.messages
+                if let raw = item.rawMessagesData { imported.messagesData = raw }
+                if let raw = item.rawGameContextData { imported.gameContextData = raw }
+                imported.updatedAt = item.updatedAt
+                imported.titleGeneratedAt = item.titleGeneratedAt
+                guard let local else {
+                    modelContext.insert(imported)
+                    continue
+                }
+                let oldDate = local.updatedAt
+                let isNewer = item.updatedAt >= oldDate
+                // A readable component always wins over an unreadable one. An older
+                // backup can repair damage without truncating a newer readable thread.
+                if (try? imported.readMessages()) != nil,
+                   isNewer || (try? local.readMessages()) == nil {
+                    local.messagesData = imported.messagesData
+                }
+                if (try? imported.readGames()) != nil,
+                   isNewer || (try? local.readGames()) == nil {
+                    local.gameContextData = imported.gameContextData
+                }
+                if isNewer && !imported.hasUnreadableContent {
+                    local.title = item.title
+                    local.createdAt = item.createdAt
+                    local.titleGeneratedAt = item.titleGeneratedAt
+                    local.accountScopeKey = item.accountScopeKey
+                }
+                local.updatedAt = max(oldDate, item.updatedAt)
             }
-            let conversation = existingConversations[item.id] ?? AIConversation(
-                id: item.id,
-                title: item.title,
-                createdAt: item.createdAt,
-                accountScopeKey: item.accountScopeKey,
-                games: item.games
-            )
-            conversation.title = item.title
-            conversation.createdAt = item.createdAt
-            conversation.messages = item.messages
-            conversation.games = item.games
-            conversation.updatedAt = item.updatedAt
-            conversation.titleGeneratedAt = item.titleGeneratedAt
-            conversation.accountScopeKey = item.accountScopeKey
-            if existingConversations[item.id] == nil { modelContext.insert(conversation) }
-        }
 
-        let existingProfiles = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<AIProfileResult>()).map { ($0.id, $0) })
-        for item in backup.profiles {
-            let profile = existingProfiles[item.id] ?? AIProfileResult(
-                id: item.id,
-                accountScopeKey: item.accountScopeKey,
-                platformFilter: item.platformFilter,
-                minimumHours: item.minimumHours,
-                generatedAt: item.generatedAt,
-                text: item.text,
-                gameCount: item.gameCount,
-                totalMinutes: item.totalMinutes
-            )
-            profile.accountScopeKey = item.accountScopeKey
-            profile.platformFilter = item.platformFilter
-            profile.minimumHours = item.minimumHours
-            profile.generatedAt = item.generatedAt
-            profile.text = item.text
-            profile.gameCount = item.gameCount
-            profile.totalMinutes = item.totalMinutes
-            if existingProfiles[item.id] == nil { modelContext.insert(profile) }
-        }
-
-        let existingPlans = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<SavedGamePlan>()).map { ($0.id, $0) })
-        for item in backup.plans {
-            let importedUpdatedAt = item.updatedAt ?? item.createdAt
-            if let local = existingPlans[item.id], local.updatedAt > importedUpdatedAt {
-                continue
+            let existingProfiles = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<AIProfileResult>()).map { ($0.id, $0) })
+            for item in backup.profiles {
+                let profile = existingProfiles[item.id] ?? AIProfileResult(
+                    id: item.id,
+                    accountScopeKey: item.accountScopeKey,
+                    platformFilter: item.platformFilter,
+                    minimumHours: item.minimumHours,
+                    generatedAt: item.generatedAt,
+                    text: item.text,
+                    gameCount: item.gameCount,
+                    totalMinutes: item.totalMinutes
+                )
+                profile.accountScopeKey = item.accountScopeKey
+                profile.platformFilter = item.platformFilter
+                profile.minimumHours = item.minimumHours
+                profile.generatedAt = item.generatedAt
+                profile.text = item.text
+                profile.gameCount = item.gameCount
+                profile.totalMinutes = item.totalMinutes
+                if existingProfiles[item.id] == nil { modelContext.insert(profile) }
             }
-            let plan = existingPlans[item.id] ?? SavedGamePlan(
-                id: item.id,
-                accountScopeKey: item.accountScopeKey,
-                title: item.title,
-                note: item.note,
-                createdAt: item.createdAt,
-                isCompleted: item.isCompleted
-            )
-            plan.accountScopeKey = item.accountScopeKey
-            plan.title = item.title
-            plan.note = item.note
-            plan.createdAt = item.createdAt
-            plan.updatedAt = importedUpdatedAt
-            plan.isCompleted = item.isCompleted
-            if existingPlans[item.id] == nil { modelContext.insert(plan) }
-        }
-            try modelContext.save()
+
+            let existingPlans = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<SavedGamePlan>()).map { ($0.id, $0) })
+            for item in backup.plans {
+                let importedUpdatedAt = item.updatedAt ?? item.createdAt
+                if let local = existingPlans[item.id], local.updatedAt > importedUpdatedAt {
+                    continue
+                }
+                let plan = existingPlans[item.id] ?? SavedGamePlan(
+                    id: item.id,
+                    accountScopeKey: item.accountScopeKey,
+                    title: item.title,
+                    note: item.note,
+                    createdAt: item.createdAt,
+                    isCompleted: item.isCompleted
+                )
+                plan.accountScopeKey = item.accountScopeKey
+                plan.title = item.title
+                plan.note = item.note
+                plan.createdAt = item.createdAt
+                plan.updatedAt = importedUpdatedAt
+                plan.isCompleted = item.isCompleted
+                if existingPlans[item.id] == nil { modelContext.insert(plan) }
+            }
             return ProductRestoreSummary(
                 gameCount: backup.games.count,
                 snapshotCount: backup.snapshots.count,
                 dailyActivityCount: backup.dailyActivities.count
             )
-        } catch {
-            modelContext.rollback()
-            throw error
         }
     }
 
@@ -417,45 +440,49 @@ enum ProductDataService {
         accountID: String,
         modelContext: ModelContext
     ) throws {
-        let platformRaw = platform.rawValue
-        let games = try modelContext.fetch(FetchDescriptor<GameRecord>(predicate: #Predicate {
-            $0.platformRaw == platformRaw && $0.accountID == accountID
-        }))
-        for game in games { modelContext.delete(game) }
-        for snapshot in try modelContext.fetch(FetchDescriptor<PlaySnapshot>())
-            where snapshot.platform == platform && snapshot.accountID == accountID {
-            modelContext.delete(snapshot)
+        LocalDataRevision.invalidate()
+        try LocalPersistence.transaction(modelContext) { modelContext in
+            let platformRaw = platform.rawValue
+            let games = try modelContext.fetch(FetchDescriptor<GameRecord>(predicate: #Predicate {
+                $0.platformRaw == platformRaw && $0.accountID == accountID
+            }))
+            for game in games { modelContext.delete(game) }
+            for snapshot in try modelContext.fetch(FetchDescriptor<PlaySnapshot>())
+                where snapshot.platform == platform && snapshot.accountID == accountID {
+                modelContext.delete(snapshot)
+            }
+            for activity in try modelContext.fetch(FetchDescriptor<DailyPlayActivity>())
+                where activity.platform == platform && activity.accountID == accountID {
+                modelContext.delete(activity)
+            }
+            for conversation in try modelContext.fetch(FetchDescriptor<AIConversation>())
+                where AccountScope.contains(conversation.accountScopeKey, platform: platform, accountID: accountID) {
+                modelContext.delete(conversation)
+            }
+            for profile in try modelContext.fetch(FetchDescriptor<AIProfileResult>())
+                where AccountScope.contains(profile.accountScopeKey, platform: platform, accountID: accountID) {
+                modelContext.delete(profile)
+            }
+            for plan in try modelContext.fetch(FetchDescriptor<SavedGamePlan>())
+                where AccountScope.contains(plan.accountScopeKey, platform: platform, accountID: accountID) {
+                modelContext.delete(plan)
+            }
         }
-        for activity in try modelContext.fetch(FetchDescriptor<DailyPlayActivity>())
-            where activity.platform == platform && activity.accountID == accountID {
-            modelContext.delete(activity)
-        }
-        for conversation in try modelContext.fetch(FetchDescriptor<AIConversation>())
-            where AccountScope.contains(conversation.accountScopeKey, platform: platform, accountID: accountID) {
-            modelContext.delete(conversation)
-        }
-        for profile in try modelContext.fetch(FetchDescriptor<AIProfileResult>())
-            where AccountScope.contains(profile.accountScopeKey, platform: platform, accountID: accountID) {
-            modelContext.delete(profile)
-        }
-        for plan in try modelContext.fetch(FetchDescriptor<SavedGamePlan>())
-            where AccountScope.contains(plan.accountScopeKey, platform: platform, accountID: accountID) {
-            modelContext.delete(plan)
-        }
-        try modelContext.save()
     }
 
     static func deleteAllLocalData(modelContext: ModelContext) async throws {
-        for item in try modelContext.fetch(FetchDescriptor<GameRecord>()) { modelContext.delete(item) }
-        for item in try modelContext.fetch(FetchDescriptor<PlaySnapshot>()) { modelContext.delete(item) }
-        for item in try modelContext.fetch(FetchDescriptor<DailyPlayActivity>()) { modelContext.delete(item) }
-        for item in try modelContext.fetch(FetchDescriptor<AIConversation>()) { modelContext.delete(item) }
-        for item in try modelContext.fetch(FetchDescriptor<AIProfileResult>()) { modelContext.delete(item) }
-        for item in try modelContext.fetch(FetchDescriptor<SavedGamePlan>()) { modelContext.delete(item) }
-        try modelContext.save()
+        LocalDataRevision.invalidate()
+        try LocalPersistence.transaction(modelContext) { modelContext in
+            for item in try modelContext.fetch(FetchDescriptor<GameRecord>()) { modelContext.delete(item) }
+            for item in try modelContext.fetch(FetchDescriptor<PlaySnapshot>()) { modelContext.delete(item) }
+            for item in try modelContext.fetch(FetchDescriptor<DailyPlayActivity>()) { modelContext.delete(item) }
+            for item in try modelContext.fetch(FetchDescriptor<AIConversation>()) { modelContext.delete(item) }
+            for item in try modelContext.fetch(FetchDescriptor<AIProfileResult>()) { modelContext.delete(item) }
+            for item in try modelContext.fetch(FetchDescriptor<SavedGamePlan>()) { modelContext.delete(item) }
+        }
         SyncCoordinator.clearStoredNonCredentialState()
         NotificationCenter.default.post(name: .youJiLocalDataDidReset, object: nil)
-        try await CoverImageStore.shared.removeAllCachedImages()
+        try? await CoverImageStore.shared.removeAllCachedImages()
     }
 
     private static func csvEscape(_ value: String) -> String {
@@ -469,10 +496,12 @@ extension Notification.Name {
 
 enum ProductDataError: LocalizedError {
     case unsupportedBackup
+    case invalidBackup(String)
 
     var errorDescription: String? {
         switch self {
-        case .unsupportedBackup: "这个备份版本暂不支持。"
+        case .unsupportedBackup: "这个备份版本暂不支持，请使用较新版本的游迹。"
+        case .invalidBackup(let reason): "备份暂时无法恢复：\(reason)。本地记录未更改，请保留原备份。"
         }
     }
 }
@@ -732,5 +761,136 @@ enum ProfileShareCardService {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("游迹游戏人格-\(UUID().uuidString).png")
         try data.write(to: url, options: .atomic)
         return url
+    }
+}
+
+extension YouJiBackup {
+    enum CodingKeys: String, CodingKey {
+        case formatVersion, createdAt, games, snapshots, dailyActivities, conversations, profiles, plans
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion = try values.decode(Int.self, forKey: .formatVersion)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        games = try values.decode([BackupGame].self, forKey: .games)
+        snapshots = try values.decodeIfPresent([BackupSnapshot].self, forKey: .snapshots) ?? []
+        dailyActivities = try values.decodeIfPresent([BackupDailyActivity].self, forKey: .dailyActivities) ?? []
+        conversations = try values.decodeIfPresent([BackupConversation].self, forKey: .conversations) ?? []
+        profiles = try values.decodeIfPresent([BackupProfile].self, forKey: .profiles) ?? []
+        plans = try values.decodeIfPresent([BackupPlan].self, forKey: .plans) ?? []
+    }
+}
+
+extension BackupGame {
+    enum CodingKeys: String, CodingKey {
+        case applicationID, accountID, titleID, platform, title, totalMinutes, imageURL
+        case firstPlayedAt, lastPlayedAt, weeklyMinutes, trophiesEarned, trophiesDefined
+        case platinumTrophiesEarned, trophiesSyncedAt, updatedAt, userEditedAt
+        case isFavorite, isManuallyHidden, isPinnedVisible, personalNote, playStatus
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        applicationID = try values.decode(String.self, forKey: .applicationID)
+        accountID = try values.decodeIfPresent(String.self, forKey: .accountID) ?? ""
+        platform = try values.decode(GamePlatform.self, forKey: .platform)
+        let prefix = platform == .playStation ? "ps:" : "switch:"
+        let identityPrefix = prefix + (accountID.isEmpty ? "" : "\(accountID):")
+        let inferredTitleID = applicationID.hasPrefix(identityPrefix)
+            ? String(applicationID.dropFirst(identityPrefix.count)) : applicationID
+        let storedTitleID = try values.decodeIfPresent(String.self, forKey: .titleID) ?? ""
+        titleID = storedTitleID.isEmpty ? inferredTitleID : storedTitleID
+        title = try values.decode(String.self, forKey: .title)
+        totalMinutes = try values.decode(Int.self, forKey: .totalMinutes)
+        imageURL = try values.decodeIfPresent(String.self, forKey: .imageURL) ?? ""
+        firstPlayedAt = try values.decodeIfPresent(Date.self, forKey: .firstPlayedAt)
+        lastPlayedAt = try values.decodeIfPresent(Date.self, forKey: .lastPlayedAt)
+        weeklyMinutes = try values.decodeIfPresent([Int].self, forKey: .weeklyMinutes) ?? Array(repeating: 0, count: 7)
+        trophiesEarned = try values.decodeIfPresent(Int.self, forKey: .trophiesEarned) ?? 0
+        trophiesDefined = try values.decodeIfPresent(Int.self, forKey: .trophiesDefined) ?? 0
+        platinumTrophiesEarned = try values.decodeIfPresent(Int.self, forKey: .platinumTrophiesEarned) ?? 0
+        trophiesSyncedAt = try values.decodeIfPresent(Date.self, forKey: .trophiesSyncedAt)
+        updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+        userEditedAt = try values.decodeIfPresent(Date.self, forKey: .userEditedAt)
+        isFavorite = try values.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        isManuallyHidden = try values.decodeIfPresent(Bool.self, forKey: .isManuallyHidden) ?? false
+        isPinnedVisible = try values.decodeIfPresent(Bool.self, forKey: .isPinnedVisible) ?? false
+        personalNote = try values.decodeIfPresent(String.self, forKey: .personalNote) ?? ""
+        playStatus = try values.decodeIfPresent(GamePlayStatus.self, forKey: .playStatus) ?? .played
+    }
+}
+
+extension ProductDataService {
+    private struct BackupIdentity: Equatable {
+        let platform: GamePlatform
+        let accountID: String
+        let titleID: String
+    }
+
+    /// Validate the whole graph before touching live records. Unknown fields remain
+    /// compatible; contradictory identities and broken references are never guessed.
+    private static func validate(_ backup: YouJiBackup, modelContext: ModelContext) throws {
+        func require(_ condition: Bool, _ reason: String) throws {
+            if !condition { throw ProductDataError.invalidBackup(reason) }
+        }
+        func unique<T: Hashable>(_ ids: [T]) throws {
+            try require(Set(ids).count == ids.count, "存在重复的记录标识")
+        }
+        try unique(backup.games.map(\.applicationID))
+        try unique(backup.snapshots.map(\.snapshotID))
+        try unique(backup.dailyActivities.map(\.activityID))
+        try unique(backup.conversations.map(\.id))
+        try unique(backup.profiles.map(\.id))
+        try unique(backup.plans.map(\.id))
+
+        var identities: [String: BackupIdentity] = [:]
+        for game in try modelContext.fetch(FetchDescriptor<GameRecord>()) {
+            identities[game.applicationID] = BackupIdentity(platform: game.platform, accountID: game.accountID, titleID: game.resolvedTitleID)
+        }
+        for game in backup.games {
+            let canonicalID = GameRecord.recordID(platform: game.platform, accountID: game.accountID, titleID: game.titleID)
+            let legacyPrefix = game.platform == .playStation ? "ps:" : "switch:"
+            let isLegacy = game.accountID.isEmpty && [game.titleID, legacyPrefix + game.titleID].contains(game.applicationID)
+            try require(!game.titleID.isEmpty && !game.titleID.contains(":") && !game.accountID.contains(":"), "游戏身份格式不正确")
+            try require(game.applicationID == canonicalID || isLegacy, "游戏标识与账号不一致")
+            let identity = BackupIdentity(platform: game.platform, accountID: game.accountID, titleID: game.titleID)
+            if let local = identities[game.applicationID] {
+                try require(local == identity, "游戏归属与本地记录冲突")
+            }
+            identities[game.applicationID] = identity
+            try require(DataValidation.minutes(game.totalMinutes), "游玩时长超出范围")
+            try require(game.weeklyMinutes.count == 7 && game.weeklyMinutes.allSatisfy(DataValidation.minutes), "七日游玩数据不完整")
+            try require([game.trophiesEarned, game.trophiesDefined, game.platinumTrophiesEarned].allSatisfy(DataValidation.trophies), "奖杯数量超出范围")
+            // Old records can have unknown defined counts; preserve them without inventing a ratio.
+            try require(game.trophiesDefined == 0 || game.trophiesEarned <= game.trophiesDefined, "奖杯数量不一致")
+        }
+        for item in backup.snapshots {
+            let prefix = GameRecord.recordID(platform: item.platform, accountID: item.accountID, titleID: "")
+            let hasValidReference: Bool
+            if let game = identities[item.gameID] {
+                hasValidReference = game.platform == item.platform && game.accountID == item.accountID
+            } else {
+                hasValidReference = item.gameID.hasPrefix(prefix) && item.gameID.count > prefix.count
+                    && !item.gameID.dropFirst(prefix.count).contains(":")
+            }
+            try require(!item.snapshotID.isEmpty && hasValidReference, "同步历史的账号归属不一致")
+            try require(DataValidation.minutes(item.totalMinutes) && DataValidation.trophies(item.trophiesEarned), "同步历史数值超出范围")
+        }
+        for item in backup.dailyActivities {
+            let identity = BackupIdentity(platform: item.platform, accountID: item.accountID, titleID: item.titleID)
+            let expectedID = GameRecord.recordID(platform: item.platform, accountID: item.accountID, titleID: item.titleID)
+            try require(identities[item.gameID].map { $0 == identity } ?? (item.gameID == expectedID && !item.titleID.isEmpty), "每日记录的账号归属不一致")
+            let dayKey = item.dayKey ?? DailyPlayActivity.dayKey(fromActivityID: item.activityID) ?? DailyPlayActivity.dayKey(for: item.day)
+            try require(DailyPlayActivity.date(fromDayKey: dayKey) != nil && item.activityID == "\(item.gameID):\(dayKey)", "每日记录的日期标识不一致")
+            try require(DataValidation.minutes(item.totalMinutes), "每日记录时长超出范围")
+        }
+        for item in backup.conversations {
+            try unique(item.messages.map(\.id))
+            try require(item.games.allSatisfy { DataValidation.minutes($0.totalMinutes) }, "对话中的时长超出范围")
+        }
+        for item in backup.profiles {
+            try require(item.minimumHours >= 0 && item.minimumHours <= DataValidation.maximumMinutes / 60 && item.gameCount >= 0 && DataValidation.minutes(item.totalMinutes), "人格记录数值超出范围")
+        }
     }
 }

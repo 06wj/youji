@@ -186,7 +186,11 @@ struct DashboardView: View {
                         PlayCalendarSection(
                             accountID: selectedArchive?.platform == .switchConsole
                                 ? selectedArchive?.accountID ?? ""
-                                : (selectedArchive == nil ? sync.currentNintendoAccountID : ""),
+                                : (selectedArchive == nil ? AccountScope.displayAccountID(
+                                    for: .switchConsole,
+                                    currentAccountID: sync.currentNintendoAccountID,
+                                    games: games
+                                ) ?? "" : ""),
                             games: currentAccountGames
                         )
                     }

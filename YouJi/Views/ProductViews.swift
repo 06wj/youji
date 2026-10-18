@@ -206,10 +206,8 @@ struct GameDetailView: View {
             title: game.title,
             note: "来自 \(game.platform.rawValue) 游戏档案"
         )
-        modelContext.insert(plan)
-        do { try modelContext.save() }
+        do { try LocalPersistence.transaction(modelContext) { $0.insert(plan) } }
         catch {
-            modelContext.rollback()
             persistenceError = error.localizedDescription
         }
     }
@@ -358,6 +356,7 @@ struct AccountCenterView: View {
     @Binding var selectedArchive: AccountArchiveSelection?
     @State private var disconnectingPlatform: GamePlatform?
     @State private var archiveToDelete: AccountArchiveSelection?
+    @State private var persistenceError: String?
 
     private var archives: [AccountArchiveSelection] {
         Set(games.compactMap { game -> AccountArchiveSelection? in
@@ -387,6 +386,9 @@ struct AccountCenterView: View {
             .navigationTitle("账号与同步")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
+            .alert("本地保存失败", isPresented: Binding(
+                get: { persistenceError != nil }, set: { if !$0 { persistenceError = nil } }
+            )) { Button("知道了", role: .cancel) {} } message: { Text(persistenceError ?? "") }
             .confirmationDialog("断开这个平台？", isPresented: Binding(
                 get: { disconnectingPlatform != nil },
                 set: { if !$0 { disconnectingPlatform = nil } }
@@ -406,8 +408,10 @@ struct AccountCenterView: View {
             )) {
                 Button("永久删除", role: .destructive) {
                     guard let archive = archiveToDelete else { return }
-                    try? ProductDataService.deleteArchive(platform: archive.platform, accountID: archive.accountID, modelContext: modelContext)
-                    if selectedArchive == archive { selectedArchive = nil }
+                    do {
+                        try ProductDataService.deleteArchive(platform: archive.platform, accountID: archive.accountID, modelContext: modelContext)
+                        if selectedArchive == archive { selectedArchive = nil }
+                    } catch { persistenceError = error.localizedDescription }
                     archiveToDelete = nil
                 }
                 Button("取消", role: .cancel) { archiveToDelete = nil }
@@ -1197,14 +1201,12 @@ struct SavedPlansView: View {
             title: newTitle.trimmingCharacters(in: .whitespacesAndNewlines),
             note: newNote
         )
-        modelContext.insert(plan)
         do {
-            try modelContext.save()
+            try LocalPersistence.transaction(modelContext) { $0.insert(plan) }
             newTitle = ""
             newNote = ""
             showNewPlan = false
         } catch {
-            modelContext.rollback()
             persistenceError = error.localizedDescription
         }
     }
@@ -1212,11 +1214,15 @@ struct SavedPlansView: View {
     private func planRow(_ plan: SavedGamePlan) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Button {
-                plan.isCompleted.toggle()
-                plan.updatedAt = .now
-                do { try modelContext.save() }
-                catch {
-                    modelContext.rollback()
+                let id = plan.id
+                do {
+                    try LocalPersistence.transaction(modelContext) { writer in
+                        if let stored = try writer.fetch(FetchDescriptor<SavedGamePlan>(predicate: #Predicate { $0.id == id })).first {
+                            stored.isCompleted.toggle()
+                            stored.updatedAt = .now
+                        }
+                    }
+                } catch {
                     persistenceError = error.localizedDescription
                 }
             } label: {
@@ -1243,10 +1249,14 @@ struct SavedPlansView: View {
         .padding(.vertical, 3)
         .swipeActions {
             Button("删除", role: .destructive) {
-                modelContext.delete(plan)
-                do { try modelContext.save() }
-                catch {
-                    modelContext.rollback()
+                let id = plan.id
+                do {
+                    try LocalPersistence.transaction(modelContext) { writer in
+                        for stored in try writer.fetch(FetchDescriptor<SavedGamePlan>(predicate: #Predicate { $0.id == id })) {
+                            writer.delete(stored)
+                        }
+                    }
+                } catch {
                     persistenceError = error.localizedDescription
                 }
             }
@@ -1304,10 +1314,14 @@ struct AIProfileHistoryView: View {
                         .padding(.vertical, 6)
                         .swipeActions {
                             Button("删除", role: .destructive) {
-                                modelContext.delete(profile)
-                                do { try modelContext.save() }
-                                catch {
-                                    modelContext.rollback()
+                                let id = profile.id
+                                do {
+                                    try LocalPersistence.transaction(modelContext) { writer in
+                                        for stored in try writer.fetch(FetchDescriptor<AIProfileResult>(predicate: #Predicate { $0.id == id })) {
+                                            writer.delete(stored)
+                                        }
+                                    }
+                                } catch {
                                     shareError = "删除失败：\(error.localizedDescription)"
                                 }
                             }

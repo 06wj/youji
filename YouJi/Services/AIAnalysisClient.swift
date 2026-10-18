@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 actor AIAnalysisClient {
     static let shared = AIAnalysisClient()
@@ -177,6 +178,25 @@ struct AIChatMessage: Codable, Identifiable, Sendable, Equatable {
     let role: Role
     let content: String
 	let createdAt: Date
+
+    enum CodingKeys: String, CodingKey { case id, role, content, createdAt }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        role = try values.decode(Role.self, forKey: .role)
+        content = try values.decode(String.self, forKey: .content)
+        createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? .distantPast
+        if let storedID = try values.decodeIfPresent(UUID.self, forKey: .id) {
+            id = storedID
+        } else {
+            // Old message JSON did not always have an ID/date. Keep fallback IDs
+            // stable across reads and distinguish identical messages by array index.
+            let path = decoder.codingPath.map(\.stringValue).joined(separator: "/")
+            let bytes = Array(SHA256.hash(data: Data("\(path):\(role.rawValue):\(content)".utf8)).prefix(16))
+            id = UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                             bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+        }
+    }
 
     init(
         id: UUID = UUID(),

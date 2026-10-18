@@ -50,8 +50,27 @@ final class SyncCoordinator: ObservableObject {
     )
     @Published var errorMessage: String?
 
-    private let nintendoAPI = NintendoAPIClient()
-    private let playStationAPI = PlayStationAPIClient()
+    private let nintendoAPI: NintendoAPIClient
+    private let playStationAPI: PlayStationAPIClient
+    private var activeRevision: UUID?
+
+    init(nintendoAPI: NintendoAPIClient = NintendoAPIClient(), playStationAPI: PlayStationAPIClient = PlayStationAPIClient()) {
+        self.nintendoAPI = nintendoAPI
+        self.playStationAPI = playStationAPI
+    }
+
+    private func beginSync() throws -> UUID {
+        guard !isSyncing || activeRevision != LocalDataRevision.current else { throw SyncStateError.alreadySyncing }
+        activeRevision = LocalDataRevision.current
+        isSyncing = true
+        return LocalDataRevision.current
+    }
+
+    private func finishSync(_ revision: UUID) {
+        guard activeRevision == revision else { return }
+        activeRevision = nil
+        isSyncing = false
+    }
 
     var connectedPlatformCount: Int {
         (isNintendoConnected ? 1 : 0) + (isPlayStationConnected ? 1 : 0)
@@ -78,33 +97,40 @@ final class SyncCoordinator: ObservableObject {
     }
 
     func finishAuthorization(code: String, verifier: String, modelContext: ModelContext) async {
-        await performSync {
+        await performSync { revision in
             let statesBeforeAuthorization = libraryStates(platform: .switchConsole, modelContext: modelContext)
             let token = try await nintendoAPI.exchangeSessionToken(code: code, verifier: verifier)
+            try LocalDataRevision.check(revision)
             let payload = try await nintendoAPI.loadLibrary(sessionToken: token)
+            try LocalDataRevision.check(revision)
             try KeychainStore.save(token, account: Keys.nintendoToken)
             isNintendoConnected = true
             selectNintendoIdentity(payload.user)
-            try await loadNintendo(modelContext: modelContext, token: token, loadedPayload: payload)
+            try await loadNintendo(modelContext: modelContext, token: token, loadedPayload: payload, revision: revision)
             let before = statesBeforeAuthorization[currentNintendoAccountID] ?? [:]
+            try LocalDataRevision.check(revision)
             completeReceipt(platform: .switchConsole, before: before, trophyFailures: 0, modelContext: modelContext)
         }
     }
 
     func finishPlayStationAuthorization(npsso: String, modelContext: ModelContext) async {
-        await performSync {
+        await performSync { revision in
             let statesBeforeAuthorization = libraryStates(platform: .playStation, modelContext: modelContext)
             let tokens = try await playStationAPI.authorize(npsso: npsso)
+            try LocalDataRevision.check(revision)
             let payload = try await playStationAPI.loadGames(accessToken: tokens.accessToken)
+            try LocalDataRevision.check(revision)
             try KeychainStore.save(tokens.refreshToken, account: Keys.playStationRefreshToken)
             isPlayStationConnected = true
             selectPlayStationIdentity(payload)
             let trophyFailures = try await loadPlayStation(
                 modelContext: modelContext,
                 accessToken: tokens.accessToken,
-                loadedPayload: payload
+                loadedPayload: payload,
+                revision: revision
             )
             let before = statesBeforeAuthorization[currentPlayStationAccountID] ?? [:]
+            try LocalDataRevision.check(revision)
             completeReceipt(platform: .playStation, before: before, trophyFailures: trophyFailures, modelContext: modelContext)
         }
     }
@@ -114,15 +140,18 @@ final class SyncCoordinator: ObservableObject {
             isNintendoConnected = false
             throw NintendoAuthError.missingCode
         }
-        isSyncing = true
-        defer { isSyncing = false }
+        let revision = try beginSync()
+        defer { finishSync(revision) }
         do {
             let before = libraryState(platform: .switchConsole, accountID: currentNintendoAccountID, modelContext: modelContext)
-            try await loadNintendo(modelContext: modelContext, token: token)
+            try await loadNintendo(modelContext: modelContext, token: token, revision: revision)
+            try LocalDataRevision.check(revision)
             completeReceipt(platform: .switchConsole, before: before, trophyFailures: 0, modelContext: modelContext)
             errorMessage = nil
             UserDefaults.standard.removeObject(forKey: Keys.lastSyncError)
         } catch {
+            try LocalDataRevision.check(revision)
+            if error is CancellationError { throw error }
             handle(error, platform: .switchConsole)
             throw error
         }
@@ -133,23 +162,29 @@ final class SyncCoordinator: ObservableObject {
             isPlayStationConnected = false
             throw PlayStationSyncError.invalidNPSSO
         }
-        isSyncing = true
-        defer { isSyncing = false }
+        let revision = try beginSync()
+        defer { finishSync(revision) }
         do {
             let before = libraryState(platform: .playStation, accountID: currentPlayStationAccountID, modelContext: modelContext)
             let tokens = try await playStationAPI.refresh(refreshToken: refreshToken)
+            try LocalDataRevision.check(revision)
             let payload = try await playStationAPI.loadGames(accessToken: tokens.accessToken)
+            try LocalDataRevision.check(revision)
             try KeychainStore.save(tokens.refreshToken, account: Keys.playStationRefreshToken)
             selectPlayStationIdentity(payload)
             let trophyFailures = try await loadPlayStation(
                 modelContext: modelContext,
                 accessToken: tokens.accessToken,
-                loadedPayload: payload
+                loadedPayload: payload,
+                revision: revision
             )
+            try LocalDataRevision.check(revision)
             completeReceipt(platform: .playStation, before: before, trophyFailures: trophyFailures, modelContext: modelContext)
             errorMessage = nil
             UserDefaults.standard.removeObject(forKey: Keys.lastSyncError)
         } catch {
+            try LocalDataRevision.check(revision)
+            if error is CancellationError { throw error }
             handle(error, platform: .playStation)
             throw error
         }
@@ -157,6 +192,7 @@ final class SyncCoordinator: ObservableObject {
 
     func syncAll(modelContext: ModelContext) async {
         guard !isSyncing else { return }
+        let revision = LocalDataRevision.current
         let shouldSyncNintendo = isNintendoConnected
         let shouldSyncPlayStation = isPlayStationConnected
         var failures: [String] = []
@@ -165,14 +201,19 @@ final class SyncCoordinator: ObservableObject {
             do { try await syncNintendo(modelContext: modelContext) }
             catch { failures.append("Switch：\(error.localizedDescription)") }
         }
+        guard revision == LocalDataRevision.current else { return }
         if shouldSyncPlayStation {
             do { try await syncPlayStation(modelContext: modelContext) }
             catch { failures.append("PlayStation：\(error.localizedDescription)") }
         }
+        guard revision == LocalDataRevision.current else { return }
         errorMessage = failures.isEmpty ? nil : failures.joined(separator: "\n")
     }
 
-    func disconnectNintendo() {
+    func disconnectNintendo(invalidatePendingWork: Bool = true) {
+        if invalidatePendingWork { LocalDataRevision.invalidate() }
+        activeRevision = nil
+        isSyncing = false
         KeychainStore.delete(account: Keys.nintendoToken)
         isNintendoConnected = false
         nintendoAccountName = ""
@@ -183,7 +224,10 @@ final class SyncCoordinator: ObservableObject {
         UserDefaults.standard.removeObject(forKey: Keys.nintendoAccountID)
     }
 
-    func disconnectPlayStation() {
+    func disconnectPlayStation(invalidatePendingWork: Bool = true) {
+        if invalidatePendingWork { LocalDataRevision.invalidate() }
+        activeRevision = nil
+        isSyncing = false
         KeychainStore.delete(account: Keys.playStationRefreshToken)
         isPlayStationConnected = false
         playStationAccountName = ""
@@ -196,6 +240,8 @@ final class SyncCoordinator: ObservableObject {
     }
 
     func resetNonCredentialState() {
+        activeRevision = nil
+        isSyncing = false
         Self.clearStoredNonCredentialState()
         currentNintendoAccountID = ""
         currentPlayStationAccountID = ""
@@ -238,59 +284,63 @@ final class SyncCoordinator: ObservableObject {
             return
         }
         do {
-            let platformRaw = GamePlatform.switchConsole.rawValue
-            let gameDescriptor = FetchDescriptor<GameRecord>(predicate: #Predicate {
-                $0.platformRaw == platformRaw
-            })
-            let activityDescriptor = FetchDescriptor<DailyPlayActivity>(predicate: #Predicate {
-                $0.platformRaw == platformRaw
-            })
-            let switchGames = try modelContext.fetch(gameDescriptor)
-            var existingIDs = Set(try modelContext.fetch(activityDescriptor).map(\.activityID))
-            var insertedAny = false
+            try LocalPersistence.transaction(modelContext) { modelContext in
+                let platformRaw = GamePlatform.switchConsole.rawValue
+                let gameDescriptor = FetchDescriptor<GameRecord>(predicate: #Predicate {
+                    $0.platformRaw == platformRaw
+                })
+                let activityDescriptor = FetchDescriptor<DailyPlayActivity>(predicate: #Predicate {
+                    $0.platformRaw == platformRaw
+                })
+                let switchGames = try modelContext.fetch(gameDescriptor)
+                var existingIDs = Set(try modelContext.fetch(activityDescriptor).map(\.activityID))
 
-            for game in switchGames {
-                let referenceDay = Calendar.current.startOfDay(for: game.updatedAt)
-                for (index, minutes) in game.weeklyMinutes.prefix(7).enumerated() where minutes > 0 {
-                    guard let day = Calendar.current.date(
-                        byAdding: .day,
-                        value: index - 6,
-                        to: referenceDay
-                    ) else { continue }
-                    let activityID = DailyPlayActivity.recordID(
-                        platform: .switchConsole,
-                        accountID: game.accountID,
-                        titleID: game.resolvedTitleID,
-                        day: day
-                    )
-                    guard existingIDs.insert(activityID).inserted else { continue }
-                    modelContext.insert(DailyPlayActivity(
-                        activityID: activityID,
-                        gameID: game.applicationID,
-                        accountID: game.accountID,
-                        titleID: game.resolvedTitleID,
-                        platform: .switchConsole,
-                        day: day,
-                        totalMinutes: minutes
-                    ))
-                    insertedAny = true
+                for game in switchGames {
+                    let referenceDay = Calendar.current.startOfDay(for: game.updatedAt)
+                    for (index, minutes) in game.weeklyMinutes.prefix(7).enumerated() where minutes > 0 {
+                        guard let day = Calendar.current.date(
+                            byAdding: .day,
+                            value: index - 6,
+                            to: referenceDay
+                        ) else { continue }
+                        let activityID = DailyPlayActivity.recordID(
+                            platform: .switchConsole,
+                            accountID: game.accountID,
+                            titleID: game.resolvedTitleID,
+                            day: day
+                        )
+                        guard existingIDs.insert(activityID).inserted else { continue }
+                        modelContext.insert(DailyPlayActivity(
+                            activityID: activityID,
+                            gameID: game.applicationID,
+                            accountID: game.accountID,
+                            titleID: game.resolvedTitleID,
+                            platform: .switchConsole,
+                            day: day,
+                            totalMinutes: minutes
+                        ))
+                    }
                 }
             }
-            if insertedAny { try modelContext.save() }
             UserDefaults.standard.set(true, forKey: Keys.didBackfillNintendoDailyActivities)
         } catch {
-            // A later Nintendo sync can rebuild the recent daily activity window.
+            errorMessage = "每日记录未能保存：\(error.localizedDescription)"
         }
     }
 
-    private func performSync(_ operation: () async throws -> Void) async {
-        isSyncing = true
-        defer { isSyncing = false }
+    private func performSync(_ operation: (UUID) async throws -> Void) async {
+        guard !isSyncing || activeRevision != LocalDataRevision.current else { return }
+        // A newly authorized account supersedes pending AI requests for the old scope.
+        LocalDataRevision.invalidate()
+        guard let revision = try? beginSync() else { return }
+        defer { finishSync(revision) }
         do {
-            try await operation()
+            try await operation(revision)
+            try LocalDataRevision.check(revision)
             errorMessage = nil
             UserDefaults.standard.removeObject(forKey: Keys.lastSyncError)
         } catch {
+            guard revision == LocalDataRevision.current, !(error is CancellationError) else { return }
             errorMessage = error.localizedDescription
             UserDefaults.standard.set(errorMessage, forKey: Keys.lastSyncError)
         }
@@ -299,7 +349,8 @@ final class SyncCoordinator: ObservableObject {
     private func loadNintendo(
         modelContext: ModelContext,
         token: String,
-        loadedPayload: NintendoSyncPayload? = nil
+        loadedPayload: NintendoSyncPayload? = nil,
+        revision: UUID
     ) async throws {
         do {
             let payload: NintendoSyncPayload
@@ -308,6 +359,8 @@ final class SyncCoordinator: ObservableObject {
             } else {
                 payload = try await nintendoAPI.loadLibrary(sessionToken: token)
             }
+            try LocalDataRevision.check(revision)
+            guard !payload.user.id.isEmpty else { throw NintendoSyncError.decode("缺少账号身份") }
             selectNintendoIdentity(payload.user)
             try upsert(payload.games, platform: .switchConsole, accountID: payload.user.id, preserveTrophies: false, modelContext: modelContext)
             try upsertDailyActivities(
@@ -318,6 +371,8 @@ final class SyncCoordinator: ObservableObject {
             try recordSnapshots(platform: .switchConsole, accountID: payload.user.id, modelContext: modelContext)
             markSynced(platform: .switchConsole, accountID: payload.user.id)
         } catch {
+            try LocalDataRevision.check(revision)
+            if error is CancellationError { throw error }
             handle(error, platform: .switchConsole)
             throw error
         }
@@ -326,7 +381,8 @@ final class SyncCoordinator: ObservableObject {
     private func loadPlayStation(
         modelContext: ModelContext,
         accessToken: String,
-        loadedPayload: PlayStationGamesPayload? = nil
+        loadedPayload: PlayStationGamesPayload? = nil,
+        revision: UUID
     ) async throws -> Int {
         do {
             var trophyFailures = 0
@@ -336,6 +392,7 @@ final class SyncCoordinator: ObservableObject {
             } else {
                 payload = try await playStationAPI.loadGames(accessToken: accessToken)
             }
+            try LocalDataRevision.check(revision)
             selectPlayStationIdentity(payload)
             try upsert(payload.games, platform: .playStation, accountID: payload.accountID, preserveTrophies: true, modelContext: modelContext)
 
@@ -359,6 +416,7 @@ final class SyncCoordinator: ObservableObject {
             })
 
             for title in payload.titles {
+                try LocalDataRevision.check(revision)
                 if let cached = trophyCache[title.titleID],
                    title.lastPlayedAt == nil || cached.syncedAt >= title.lastPlayedAt! {
                     continue
@@ -368,7 +426,10 @@ final class SyncCoordinator: ObservableObject {
                         titleID: title.titleID,
                         accessToken: accessToken
                     ), let record = recordsByTitleID[update.titleID] {
+                        try LocalDataRevision.check(revision)
                         try applyTrophy(update, to: record, modelContext: modelContext)
+                    } else {
+                        trophyFailures += 1
                     }
                 } catch PlayStationSyncError.authenticationExpired {
                     throw PlayStationSyncError.authenticationExpired
@@ -383,6 +444,7 @@ final class SyncCoordinator: ObservableObject {
 
             do {
                 let summary = try await playStationAPI.loadTrophySummary(accessToken: accessToken)
+                try LocalDataRevision.check(revision)
                 playStationTrophies = summary
                 if let data = try? JSONEncoder().encode(summary) {
                     UserDefaults.standard.set(data, forKey: Keys.playStationTrophies(accountID: payload.accountID))
@@ -394,10 +456,13 @@ final class SyncCoordinator: ObservableObject {
                 trophyFailures += 1
             }
 
+            try LocalDataRevision.check(revision)
             try recordSnapshots(platform: .playStation, accountID: payload.accountID, modelContext: modelContext)
             markSynced(platform: .playStation, accountID: payload.accountID)
             return trophyFailures
         } catch {
+            try LocalDataRevision.check(revision)
+            if error is CancellationError { throw error }
             handle(error, platform: .playStation)
             throw error
         }
@@ -411,37 +476,46 @@ final class SyncCoordinator: ObservableObject {
         modelContext: ModelContext
     ) throws {
         try migrateLegacyRecords(platform: platform, accountID: accountID, modelContext: modelContext)
-        let existing = try records(platform: platform, accountID: accountID, modelContext: modelContext)
-        let byID = Dictionary(uniqueKeysWithValues: existing.map { ($0.applicationID, $0) })
+        try LocalPersistence.transaction(modelContext) { modelContext in
+            let existing = try records(platform: platform, accountID: accountID, modelContext: modelContext)
+            var byID = Dictionary(uniqueKeysWithValues: existing.map { ($0.applicationID, $0) })
 
-        for item in games {
-            let recordID = GameRecord.recordID(platform: item.platform, accountID: accountID, titleID: item.titleID)
-            let record = byID[recordID] ?? GameRecord(
-                applicationID: recordID,
-                accountID: accountID,
-                titleID: item.titleID,
-                platform: item.platform,
-                title: item.title
-            )
-            record.accountID = accountID
-            record.titleID = item.titleID
-            record.platform = item.platform
-            record.title = item.title
-            record.totalMinutes = item.totalMinutes
-            record.imageURL = item.imageURL
-            record.firstPlayedAt = item.firstPlayedAt
-            record.lastPlayedAt = item.lastPlayedAt
-            record.weeklyMinutes = item.weeklyMinutes
-            if !preserveTrophies {
-                record.trophiesEarned = item.trophiesEarned
-                record.trophiesDefined = item.trophiesDefined
-                record.platinumTrophiesEarned = item.platinumTrophiesEarned
-                record.trophiesSyncedAt = item.trophiesSyncedAt
+            for item in games {
+                let recordID = GameRecord.recordID(platform: item.platform, accountID: accountID, titleID: item.titleID)
+                let record = byID[recordID] ?? GameRecord(
+                    applicationID: recordID,
+                    accountID: accountID,
+                    titleID: item.titleID,
+                    platform: item.platform,
+                    title: item.title
+                )
+                guard item.platform == platform, !item.titleID.isEmpty,
+                      DataValidation.minutes(item.totalMinutes), item.weeklyMinutes.count == 7,
+                      item.weeklyMinutes.allSatisfy(DataValidation.minutes) else {
+                    throw ProductDataError.invalidBackup("平台游戏数据不完整")
+                }
+                // Freeze a legacy customization timestamp before advancing platform freshness.
+                if record.userEditedAt == .distantPast { record.userEditedAt = record.resolvedUserEditedAt }
+                record.accountID = accountID
+                record.titleID = item.titleID
+                record.platform = item.platform
+                if !item.title.isEmpty { record.title = item.title }
+                record.totalMinutes = item.totalMinutes
+                if !item.imageURL.isEmpty { record.imageURL = item.imageURL }
+                record.firstPlayedAt = item.firstPlayedAt ?? record.firstPlayedAt
+                record.lastPlayedAt = item.lastPlayedAt ?? record.lastPlayedAt
+                record.weeklyMinutes = item.weeklyMinutes
+                if !preserveTrophies {
+                    record.trophiesEarned = item.trophiesEarned
+                    record.trophiesDefined = item.trophiesDefined
+                    record.platinumTrophiesEarned = item.platinumTrophiesEarned
+                    record.trophiesSyncedAt = item.trophiesSyncedAt
+                }
+                record.updatedAt = .now
+                if byID[recordID] == nil { modelContext.insert(record) }
+                byID[recordID] = record
             }
-            record.updatedAt = .now
-            if byID[recordID] == nil { modelContext.insert(record) }
         }
-        try modelContext.save()
     }
 
     private func upsertDailyActivities(
@@ -449,42 +523,47 @@ final class SyncCoordinator: ObservableObject {
         accountID: String,
         modelContext: ModelContext
     ) throws {
-        guard !activities.isEmpty else { return }
-        let platformRaw = GamePlatform.switchConsole.rawValue
-        let descriptor = FetchDescriptor<DailyPlayActivity>(predicate: #Predicate {
-            $0.platformRaw == platformRaw
-                && $0.accountID == accountID
-        })
-        let existing = try modelContext.fetch(descriptor)
-        let byID = Dictionary(uniqueKeysWithValues: existing.map { ($0.activityID, $0) })
+        try LocalPersistence.transaction(modelContext) { modelContext in
+            guard !activities.isEmpty else { return }
+            let platformRaw = GamePlatform.switchConsole.rawValue
+            let descriptor = FetchDescriptor<DailyPlayActivity>(predicate: #Predicate {
+                $0.platformRaw == platformRaw
+                    && $0.accountID == accountID
+            })
+            let existing = try modelContext.fetch(descriptor)
+            var byID = Dictionary(uniqueKeysWithValues: existing.map { ($0.activityID, $0) })
 
-        for item in activities {
-            let activityID = DailyPlayActivity.recordID(
-                platform: .switchConsole,
-                accountID: accountID,
-                titleID: item.titleID,
-                dayKey: item.dayKey
-            )
-            let activity = byID[activityID] ?? DailyPlayActivity(
-                activityID: activityID,
-                gameID: GameRecord.recordID(
+            for item in activities {
+                guard DataValidation.minutes(item.totalMinutes), DailyPlayActivity.date(fromDayKey: item.dayKey) != nil else {
+                    throw ProductDataError.invalidBackup("平台每日记录不完整")
+                }
+                let activityID = DailyPlayActivity.recordID(
                     platform: .switchConsole,
                     accountID: accountID,
-                    titleID: item.titleID
-                ),
-                accountID: accountID,
-                titleID: item.titleID,
-                platform: .switchConsole,
-                day: item.day,
-                totalMinutes: item.totalMinutes
-            )
-            activity.dayKey = item.dayKey
-            activity.day = DailyPlayActivity.date(fromDayKey: item.dayKey) ?? Calendar.current.startOfDay(for: item.day)
-            activity.totalMinutes = item.totalMinutes
-            activity.updatedAt = .now
-            if byID[activityID] == nil { modelContext.insert(activity) }
+                    titleID: item.titleID,
+                    dayKey: item.dayKey
+                )
+                let activity = byID[activityID] ?? DailyPlayActivity(
+                    activityID: activityID,
+                    gameID: GameRecord.recordID(
+                        platform: .switchConsole,
+                        accountID: accountID,
+                        titleID: item.titleID
+                    ),
+                    accountID: accountID,
+                    titleID: item.titleID,
+                    platform: .switchConsole,
+                    day: item.day,
+                    totalMinutes: item.totalMinutes
+                )
+                activity.dayKey = item.dayKey
+                activity.day = DailyPlayActivity.date(fromDayKey: item.dayKey) ?? Calendar.current.startOfDay(for: item.day)
+                activity.totalMinutes = item.totalMinutes
+                activity.updatedAt = .now
+                if byID[activityID] == nil { modelContext.insert(activity) }
+                byID[activityID] = activity
+            }
         }
-        try modelContext.save()
     }
 
     private func applyTrophy(
@@ -492,12 +571,18 @@ final class SyncCoordinator: ObservableObject {
         to record: GameRecord,
         modelContext: ModelContext
     ) throws {
-        record.trophiesEarned = update.earned
-        record.trophiesDefined = update.defined
-        record.platinumTrophiesEarned = update.platinum
-        record.trophiesSyncedAt = update.syncedAt
-        record.updatedAt = .now
-        try modelContext.save()
+        let applicationID = record.applicationID
+        try LocalPersistence.transaction(modelContext) { modelContext in
+            guard let record = try modelContext.fetch(FetchDescriptor<GameRecord>(predicate: #Predicate {
+                $0.applicationID == applicationID
+            })).first else { throw CancellationError() }
+            if record.userEditedAt == .distantPast { record.userEditedAt = record.resolvedUserEditedAt }
+            record.trophiesEarned = update.earned
+            record.trophiesDefined = update.defined
+            record.platinumTrophiesEarned = update.platinum
+            record.trophiesSyncedAt = update.syncedAt
+            record.updatedAt = .now
+        }
     }
 
     private func migrateLegacyRecords(
@@ -517,19 +602,20 @@ final class SyncCoordinator: ObservableObject {
         accountID: String,
         modelContext: ModelContext
     ) throws {
-        let records = try records(platform: platform, accountID: accountID, modelContext: modelContext)
-        let date = Date.now
-        for record in records {
-            modelContext.insert(PlaySnapshot(
-                gameID: record.applicationID,
-                accountID: accountID,
-                platform: platform,
-                date: date,
-                totalMinutes: record.totalMinutes,
-                trophiesEarned: record.trophiesEarned
-            ))
+        try LocalPersistence.transaction(modelContext) { modelContext in
+            let records = try records(platform: platform, accountID: accountID, modelContext: modelContext)
+            let date = Date.now
+            for record in records {
+                modelContext.insert(PlaySnapshot(
+                    gameID: record.applicationID,
+                    accountID: accountID,
+                    platform: platform,
+                    date: date,
+                    totalMinutes: record.totalMinutes,
+                    trophiesEarned: record.trophiesEarned
+                ))
+            }
         }
-        try modelContext.save()
     }
 
     private func records(
@@ -701,11 +787,11 @@ final class SyncCoordinator: ObservableObject {
         switch platform {
         case .switchConsole:
             if case NintendoSyncError.authenticationExpired = error {
-                disconnectNintendo()
+                disconnectNintendo(invalidatePendingWork: false)
             }
         case .playStation:
             if case PlayStationSyncError.authenticationExpired = error {
-                disconnectPlayStation()
+                disconnectPlayStation(invalidatePendingWork: false)
             }
         }
         errorMessage = error.localizedDescription
@@ -744,60 +830,63 @@ enum LegacyRecordMigrator {
         modelContext: ModelContext
     ) throws {
         guard !accountID.isEmpty else { return }
-        let platformRaw = platform.rawValue
-        let descriptor = FetchDescriptor<GameRecord>(predicate: #Predicate {
-            $0.platformRaw == platformRaw
-        })
-        let records = try modelContext.fetch(descriptor)
-        var recordsByID = Dictionary(uniqueKeysWithValues: records.map { ($0.applicationID, $0) })
-        let snapshots = try modelContext.fetch(FetchDescriptor<PlaySnapshot>())
-        let activities = try modelContext.fetch(FetchDescriptor<DailyPlayActivity>())
-        var activitiesByID = Dictionary(uniqueKeysWithValues: activities.map { ($0.activityID, $0) })
+        try LocalPersistence.transaction(modelContext) { modelContext in
+            let platformRaw = platform.rawValue
+            let descriptor = FetchDescriptor<GameRecord>(predicate: #Predicate {
+                $0.platformRaw == platformRaw
+            })
+            let records = try modelContext.fetch(descriptor)
+            var recordsByID = Dictionary(uniqueKeysWithValues: records.map { ($0.applicationID, $0) })
+            let snapshots = try modelContext.fetch(FetchDescriptor<PlaySnapshot>())
+            let activities = try modelContext.fetch(FetchDescriptor<DailyPlayActivity>())
+            var activitiesByID = Dictionary(uniqueKeysWithValues: activities.map { ($0.activityID, $0) })
 
-        for legacy in records where legacy.platform == platform && legacy.accountID.isEmpty {
-            let oldID = legacy.applicationID
-            let titleID = legacy.resolvedTitleID
-            let newID = GameRecord.recordID(platform: platform, accountID: accountID, titleID: titleID)
+            for legacy in records where legacy.platform == platform && legacy.accountID.isEmpty {
+                let oldID = legacy.applicationID
+                let titleID = legacy.resolvedTitleID
+                let newID = GameRecord.recordID(platform: platform, accountID: accountID, titleID: titleID)
 
-            for snapshot in snapshots where snapshot.gameID == oldID {
-                snapshot.gameID = newID
-                snapshot.accountID = accountID
-                snapshot.platformRaw = platform.rawValue
-            }
+                for snapshot in snapshots where snapshot.gameID == oldID {
+                    snapshot.gameID = newID
+                    snapshot.accountID = accountID
+                    snapshot.platformRaw = platform.rawValue
+                }
 
-            for activity in activities where activity.gameID == oldID {
-                let newActivityID = "\(newID):\(activity.resolvedDayKey)"
-                if let existing = activitiesByID[newActivityID], existing !== activity {
-                    existing.totalMinutes = max(existing.totalMinutes, activity.totalMinutes)
-                    existing.updatedAt = max(existing.updatedAt, activity.updatedAt)
-                    modelContext.delete(activity)
+                for activity in activities where activity.gameID == oldID {
+                    let newActivityID = "\(newID):\(activity.resolvedDayKey)"
+                    if let existing = activitiesByID[newActivityID], existing !== activity {
+                        existing.totalMinutes = max(existing.totalMinutes, activity.totalMinutes)
+                        existing.updatedAt = max(existing.updatedAt, activity.updatedAt)
+                        modelContext.delete(activity)
+                    } else {
+                        activitiesByID.removeValue(forKey: activity.activityID)
+                        activity.activityID = newActivityID
+                        activity.gameID = newID
+                        activity.accountID = accountID
+                        activity.titleID = titleID
+                        activity.platformRaw = platform.rawValue
+                        activity.dayKey = activity.resolvedDayKey
+                        activitiesByID[newActivityID] = activity
+                    }
+                }
+
+                if let current = recordsByID[newID], current !== legacy {
+                    mergeUserAndHistoryData(from: legacy, into: current)
+                    modelContext.delete(legacy)
                 } else {
-                    activitiesByID.removeValue(forKey: activity.activityID)
-                    activity.activityID = newActivityID
-                    activity.gameID = newID
-                    activity.accountID = accountID
-                    activity.titleID = titleID
-                    activity.platformRaw = platform.rawValue
-                    activity.dayKey = activity.resolvedDayKey
-                    activitiesByID[newActivityID] = activity
+                    recordsByID.removeValue(forKey: oldID)
+                    legacy.userEditedAt = legacy.resolvedUserEditedAt
+                    legacy.accountID = accountID
+                    legacy.titleID = titleID
+                    legacy.applicationID = newID
+                    recordsByID[newID] = legacy
                 }
             }
-
-            if let current = recordsByID[newID], current !== legacy {
-                mergeUserAndHistoryData(from: legacy, into: current)
-                modelContext.delete(legacy)
-            } else {
-                recordsByID.removeValue(forKey: oldID)
-                legacy.accountID = accountID
-                legacy.titleID = titleID
-                legacy.applicationID = newID
-                recordsByID[newID] = legacy
-            }
         }
-        try modelContext.save()
     }
 
     private static func mergeUserAndHistoryData(from legacy: GameRecord, into current: GameRecord) {
+        let actualUserEditedAt = max(current.resolvedUserEditedAt, legacy.resolvedUserEditedAt)
         current.totalMinutes = max(current.totalMinutes, legacy.totalMinutes)
         if current.title.isEmpty { current.title = legacy.title }
         if current.imageURL.isEmpty { current.imageURL = legacy.imageURL }
@@ -813,13 +902,18 @@ enum LegacyRecordMigrator {
         current.isPinnedVisible = current.isPinnedVisible || legacy.isPinnedVisible
         if current.personalNote.isEmpty {
             current.personalNote = legacy.personalNote
-        } else if !legacy.personalNote.isEmpty && current.personalNote != legacy.personalNote {
+        } else if !legacy.personalNote.isEmpty && !current.personalNote.contains(legacy.personalNote) {
             current.personalNote += "\n\(legacy.personalNote)"
         }
         if current.playStatus == .played && legacy.playStatus != .played {
             current.playStatus = legacy.playStatus
         }
-        current.userEditedAt = max(current.resolvedUserEditedAt, legacy.resolvedUserEditedAt)
+        current.userEditedAt = actualUserEditedAt
         current.updatedAt = max(current.updatedAt, legacy.updatedAt)
     }
+}
+
+private enum SyncStateError: LocalizedError {
+    case alreadySyncing
+    var errorDescription: String? { "正在同步，请稍后再试。" }
 }

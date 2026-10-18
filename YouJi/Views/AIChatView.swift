@@ -6,6 +6,7 @@ struct AIChatView: View {
     @Environment(\.modelContext) private var modelContext
     @Bindable var conversation: AIConversation
 
+    @State private var archiveRevision = LocalDataRevision.current
     @State private var messages: [AIChatMessage]
     @State private var draft = ""
     @State private var isSending = false
@@ -31,8 +32,17 @@ struct AIChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            conversationView
-            composer
+            if archiveRevision != LocalDataRevision.current {
+                Text("档案已更新，请返回列表重新打开对话。")
+                    .font(.caption).foregroundStyle(.secondary).padding(12)
+            }
+            if conversation.hasUnreadableContent {
+                ContentUnavailableView("这段对话暂时无法读取", systemImage: "externaldrive.badge.exclamationmark",
+                                       description: Text("原始内容已保留。你可以在设置中导出完整备份，或恢复此前的备份。"))
+            } else {
+                conversationView
+            }
+            composer.disabled(conversation.hasUnreadableContent || archiveRevision != LocalDataRevision.current)
         }
         .background(chatBackground)
         .navigationTitle(conversation.title)
@@ -99,9 +109,16 @@ struct AIChatView: View {
         }
         .onDisappear {
             requestTask?.cancel()
-            if messages.isEmpty {
-                modelContext.delete(conversation)
-                try? modelContext.save()
+            titleTask?.cancel()
+            guard archiveRevision == LocalDataRevision.current,
+                  conversation.modelContext != nil, !conversation.isDeleted,
+                  !conversation.hasUnreadableContent else { return }
+            if messages.isEmpty && conversation.canDiscardEmptyConversation {
+                do {
+                    try LocalPersistence.transaction(modelContext) { writer in
+                        writer.delete(try LocalPersistence.conversation(conversation.id, in: writer))
+                    }
+                } catch { errorMessage = error.localizedDescription }
             } else {
                 try? persistMessages()
             }
@@ -307,7 +324,8 @@ struct AIChatView: View {
 
     private func sendMessage() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isSending else { return }
+        guard !text.isEmpty, !isSending, !conversation.hasUnreadableContent,
+              archiveRevision == LocalDataRevision.current else { return }
         guard hasAIConfiguration else {
             showSettings = true
             return
@@ -341,7 +359,8 @@ struct AIChatView: View {
     }
 
     private func retryLastResponse() {
-        guard !isSending, messages.last?.role == .user else { return }
+        guard !isSending, messages.last?.role == .user, !conversation.hasUnreadableContent,
+              archiveRevision == LocalDataRevision.current else { return }
         errorMessage = nil
         isSending = true
         canRetry = false
@@ -368,7 +387,8 @@ struct AIChatView: View {
                     apiKey: apiKey,
                     model: model
                 )
-                try Task.checkCancellation()
+                try LocalDataRevision.check(archiveRevision)
+                guard conversation.modelContext != nil, !conversation.isDeleted else { return }
                 guard activeRequestID == requestID else { return }
                 messages.append(AIChatMessage(role: .assistant, content: answer))
                 do {
@@ -404,11 +424,9 @@ struct AIChatView: View {
             title: title,
             note: planNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         )
-        modelContext.insert(plan)
         do {
-            try modelContext.save()
+            try LocalPersistence.transaction(modelContext) { $0.insert(plan) }
         } catch {
-            modelContext.delete(plan)
             errorMessage = "计划未能保存：\(error.localizedDescription)"
             return
         }
@@ -420,8 +438,13 @@ struct AIChatView: View {
     }
 
     private func persistMessages() throws {
-        conversation.messages = messages
-        try modelContext.save()
+        try LocalDataRevision.check(archiveRevision)
+        guard conversation.modelContext != nil, !conversation.isDeleted, !conversation.hasUnreadableContent else {
+            throw CancellationError()
+        }
+        try LocalPersistence.transaction(modelContext) { writer in
+            try LocalPersistence.conversation(conversation.id, in: writer).messages = messages
+        }
     }
 
     private func generateTitleIfNeeded(apiKey: String, model: String) {
@@ -443,17 +466,13 @@ struct AIChatView: View {
                     apiKey: apiKey,
                     model: model
                 )
-                let previousTitle = conversation.title
-                let previousUpdatedAt = conversation.updatedAt
-                conversation.title = title
-                conversation.titleGeneratedAt = .now
-                conversation.updatedAt = .now
-                do {
-                    try modelContext.save()
-                } catch {
-                    conversation.title = previousTitle
-                    conversation.titleGeneratedAt = nil
-                    conversation.updatedAt = previousUpdatedAt
+                try LocalDataRevision.check(archiveRevision)
+                guard conversation.modelContext != nil, !conversation.isDeleted, !conversation.hasUnreadableContent else { return }
+                try LocalPersistence.transaction(modelContext) { writer in
+                    let stored = try LocalPersistence.conversation(conversation.id, in: writer)
+                    stored.title = title
+                    stored.titleGeneratedAt = .now
+                    stored.updatedAt = .now
                 }
             } catch {
                 // A generated title is optional; retry after a later reply.
