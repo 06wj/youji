@@ -30,6 +30,7 @@ struct BackupGame: Codable {
     let platinumTrophiesEarned: Int
     let trophiesSyncedAt: Date?
     let updatedAt: Date
+    let userEditedAt: Date?
     let isFavorite: Bool
     let isManuallyHidden: Bool
     let isPinnedVisible: Bool
@@ -53,6 +54,7 @@ struct BackupDailyActivity: Codable {
     let accountID: String
     let titleID: String
     let platform: GamePlatform
+    let dayKey: String?
     let day: Date
     let totalMinutes: Int
     let updatedAt: Date
@@ -86,6 +88,7 @@ struct BackupPlan: Codable {
     let title: String
     let note: String
     let createdAt: Date
+    let updatedAt: Date?
     let isCompleted: Bool
 }
 
@@ -115,6 +118,7 @@ enum ProductDataService {
                 platinumTrophiesEarned: $0.platinumTrophiesEarned,
                 trophiesSyncedAt: $0.trophiesSyncedAt,
                 updatedAt: $0.updatedAt,
+                userEditedAt: $0.resolvedUserEditedAt,
                 isFavorite: $0.isFavorite,
                 isManuallyHidden: $0.isManuallyHidden,
                 isPinnedVisible: $0.isPinnedVisible,
@@ -140,6 +144,7 @@ enum ProductDataService {
                 accountID: $0.accountID,
                 titleID: $0.titleID,
                 platform: $0.platform,
+                dayKey: $0.resolvedDayKey,
                 day: $0.day,
                 totalMinutes: $0.totalMinutes,
                 updatedAt: $0.updatedAt
@@ -176,6 +181,7 @@ enum ProductDataService {
                 title: $0.title,
                 note: $0.note,
                 createdAt: $0.createdAt,
+                updatedAt: $0.updatedAt,
                 isCompleted: $0.isCompleted
             )
         }
@@ -205,35 +211,51 @@ enum ProductDataService {
         let backup = try decoder.decode(YouJiBackup.self, from: data)
         guard backup.formatVersion == 1 else { throw ProductDataError.unsupportedBackup }
 
+        do {
+
         let existingGames = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<GameRecord>()).map { ($0.applicationID, $0) })
         for item in backup.games {
-            let game = existingGames[item.applicationID] ?? GameRecord(
+            let local = existingGames[item.applicationID]
+            let game = local ?? GameRecord(
                 applicationID: item.applicationID,
                 accountID: item.accountID,
                 titleID: item.titleID,
                 platform: item.platform,
                 title: item.title
             )
-            game.accountID = item.accountID
-            game.titleID = item.titleID
-            game.platform = item.platform
-            game.title = item.title
-            game.totalMinutes = item.totalMinutes
-            game.imageURL = item.imageURL
-            game.firstPlayedAt = item.firstPlayedAt
-            game.lastPlayedAt = item.lastPlayedAt
-            game.weeklyMinutes = item.weeklyMinutes
-            game.trophiesEarned = item.trophiesEarned
-            game.trophiesDefined = item.trophiesDefined
-            game.platinumTrophiesEarned = item.platinumTrophiesEarned
-            game.trophiesSyncedAt = item.trophiesSyncedAt
-            game.updatedAt = item.updatedAt
-            game.isFavorite = item.isFavorite
-            game.isManuallyHidden = item.isManuallyHidden
-            game.isPinnedVisible = item.isPinnedVisible
-            game.personalNote = item.personalNote
-            game.playStatus = item.playStatus
-            if existingGames[item.applicationID] == nil { modelContext.insert(game) }
+            let localUserEditedAt = game.resolvedUserEditedAt
+            if local == nil || game.updatedAt <= item.updatedAt {
+                game.accountID = item.accountID
+                game.titleID = item.titleID
+                game.platform = item.platform
+                game.title = item.title
+                game.totalMinutes = item.totalMinutes
+                game.imageURL = item.imageURL
+                game.firstPlayedAt = item.firstPlayedAt
+                game.lastPlayedAt = item.lastPlayedAt
+                game.weeklyMinutes = item.weeklyMinutes
+                game.trophiesEarned = item.trophiesEarned
+                game.trophiesDefined = item.trophiesDefined
+                game.platinumTrophiesEarned = item.platinumTrophiesEarned
+                game.trophiesSyncedAt = item.trophiesSyncedAt
+                game.updatedAt = item.updatedAt
+            }
+            let backupHasCustomization = item.isFavorite
+                || item.isManuallyHidden
+                || item.isPinnedVisible
+                || !item.personalNote.isEmpty
+                || item.playStatus != .played
+            let importedUserEditedAt = item.userEditedAt
+                ?? (backupHasCustomization ? item.updatedAt : .distantPast)
+            if local == nil || localUserEditedAt <= importedUserEditedAt {
+                game.isFavorite = item.isFavorite
+                game.isManuallyHidden = item.isManuallyHidden
+                game.isPinnedVisible = item.isPinnedVisible
+                game.personalNote = item.personalNote
+                game.playStatus = item.playStatus
+                game.userEditedAt = importedUserEditedAt
+            }
+            if local == nil { modelContext.insert(game) }
         }
 
         let snapshotIDs = Set(try modelContext.fetch(FetchDescriptor<PlaySnapshot>()).map(\.snapshotID))
@@ -251,6 +273,9 @@ enum ProductDataService {
 
         let existingActivities = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<DailyPlayActivity>()).map { ($0.activityID, $0) })
         for item in backup.dailyActivities {
+            if let local = existingActivities[item.activityID], local.updatedAt > item.updatedAt {
+                continue
+            }
             let activity = existingActivities[item.activityID] ?? DailyPlayActivity(
                 activityID: item.activityID,
                 gameID: item.gameID,
@@ -264,7 +289,10 @@ enum ProductDataService {
             activity.accountID = item.accountID
             activity.titleID = item.titleID
             activity.platformRaw = item.platform.rawValue
-            activity.day = item.day
+            activity.dayKey = item.dayKey
+                ?? DailyPlayActivity.dayKey(fromActivityID: item.activityID)
+                ?? DailyPlayActivity.dayKey(for: item.day)
+            activity.day = DailyPlayActivity.date(fromDayKey: activity.dayKey) ?? item.day
             activity.totalMinutes = item.totalMinutes
             activity.updatedAt = item.updatedAt
             if existingActivities[item.activityID] == nil { modelContext.insert(activity) }
@@ -272,6 +300,9 @@ enum ProductDataService {
 
         let existingConversations = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<AIConversation>()).map { ($0.id, $0) })
         for item in backup.conversations {
+            if let local = existingConversations[item.id], local.updatedAt > item.updatedAt {
+                continue
+            }
             let conversation = existingConversations[item.id] ?? AIConversation(
                 id: item.id,
                 title: item.title,
@@ -313,6 +344,10 @@ enum ProductDataService {
 
         let existingPlans = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<SavedGamePlan>()).map { ($0.id, $0) })
         for item in backup.plans {
+            let importedUpdatedAt = item.updatedAt ?? item.createdAt
+            if let local = existingPlans[item.id], local.updatedAt > importedUpdatedAt {
+                continue
+            }
             let plan = existingPlans[item.id] ?? SavedGamePlan(
                 id: item.id,
                 accountScopeKey: item.accountScopeKey,
@@ -325,15 +360,20 @@ enum ProductDataService {
             plan.title = item.title
             plan.note = item.note
             plan.createdAt = item.createdAt
+            plan.updatedAt = importedUpdatedAt
             plan.isCompleted = item.isCompleted
             if existingPlans[item.id] == nil { modelContext.insert(plan) }
         }
-        try modelContext.save()
-        return ProductRestoreSummary(
-            gameCount: backup.games.count,
-            snapshotCount: backup.snapshots.count,
-            dailyActivityCount: backup.dailyActivities.count
-        )
+            try modelContext.save()
+            return ProductRestoreSummary(
+                gameCount: backup.games.count,
+                snapshotCount: backup.snapshots.count,
+                dailyActivityCount: backup.dailyActivities.count
+            )
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
     }
 
     static func libraryCSV(games: [GameRecord]) -> String {
@@ -390,19 +430,17 @@ enum ProductDataService {
             where activity.platform == platform && activity.accountID == accountID {
             modelContext.delete(activity)
         }
-        if !games.isEmpty {
-            for conversation in try modelContext.fetch(FetchDescriptor<AIConversation>())
-                where AccountScope.contains(conversation.accountScopeKey, platform: platform, accountID: accountID) {
-                modelContext.delete(conversation)
-            }
-            for profile in try modelContext.fetch(FetchDescriptor<AIProfileResult>())
-                where AccountScope.contains(profile.accountScopeKey, platform: platform, accountID: accountID) {
-                modelContext.delete(profile)
-            }
-            for plan in try modelContext.fetch(FetchDescriptor<SavedGamePlan>())
-                where AccountScope.contains(plan.accountScopeKey, platform: platform, accountID: accountID) {
-                modelContext.delete(plan)
-            }
+        for conversation in try modelContext.fetch(FetchDescriptor<AIConversation>())
+            where AccountScope.contains(conversation.accountScopeKey, platform: platform, accountID: accountID) {
+            modelContext.delete(conversation)
+        }
+        for profile in try modelContext.fetch(FetchDescriptor<AIProfileResult>())
+            where AccountScope.contains(profile.accountScopeKey, platform: platform, accountID: accountID) {
+            modelContext.delete(profile)
+        }
+        for plan in try modelContext.fetch(FetchDescriptor<SavedGamePlan>())
+            where AccountScope.contains(plan.accountScopeKey, platform: platform, accountID: accountID) {
+            modelContext.delete(plan)
         }
         try modelContext.save()
     }
@@ -503,7 +541,7 @@ enum PlayTimelineBuilder {
             PlayTimelineEntry(
                 id: "daily:\(activity.activityID)",
                 gameID: activity.gameID,
-                date: activity.day,
+                date: activity.displayDay,
                 addedMinutes: activity.totalMinutes,
                 addedTrophies: 0,
                 source: .dailyActivity

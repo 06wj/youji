@@ -197,6 +197,64 @@ final class YouJiDataTests: XCTestCase {
         XCTAssertTrue(visible.isEmpty)
     }
 
+    func testVisibleScopeUsesAutomaticallyDisplayedArchiveAccounts() {
+        let playStation = GameRecord(
+            applicationID: "ps:archive-ps:game",
+            accountID: "archive-ps",
+            titleID: "game",
+            platform: .playStation,
+            title: "PS Game"
+        )
+        let nintendo = GameRecord(
+            applicationID: "switch:current-ns:game",
+            accountID: "current-ns",
+            titleID: "game",
+            platform: .switchConsole,
+            title: "NS Game"
+        )
+
+        XCTAssertEqual(
+            AccountScope.visibleScopeKey(
+                for: [playStation, nintendo],
+                playStationAccountID: "",
+                nintendoAccountID: "current-ns"
+            ),
+            "ps:archive-ps|switch:current-ns"
+        )
+    }
+
+    func testLegacyScopeMigrationRequiresUnambiguousAccounts() {
+        let playStation = GameRecord(
+            applicationID: "ps:archive-ps:game",
+            accountID: "archive-ps",
+            titleID: "game",
+            platform: .playStation,
+            title: "PS Game"
+        )
+        let nintendo = GameRecord(
+            applicationID: "switch:archive-ns:game",
+            accountID: "archive-ns",
+            titleID: "game",
+            platform: .switchConsole,
+            title: "NS Game"
+        )
+        XCTAssertEqual(
+            AccountScope.unambiguousArchiveScopeKey(for: [playStation, nintendo]),
+            "ps:archive-ps|switch:archive-ns"
+        )
+
+        let otherPlayStation = GameRecord(
+            applicationID: "ps:other:game",
+            accountID: "other",
+            titleID: "game",
+            platform: .playStation,
+            title: "Other PS Game"
+        )
+        XCTAssertNil(
+            AccountScope.unambiguousArchiveScopeKey(for: [playStation, otherPlayStation, nintendo])
+        )
+    }
+
     @MainActor
     func testDeletingArchiveDoesNotMatchAccountPrefix() throws {
         let container = try ModelContainer(
@@ -386,6 +444,89 @@ final class YouJiDataTests: XCTestCase {
             titleID: "game-1",
             day: secondDay
         ))
+    }
+
+    func testDailyActivityDayKeyIsStableAcrossTimeZones() throws {
+        var shanghai = Calendar(identifier: .gregorian)
+        shanghai.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
+        var losAngeles = Calendar(identifier: .gregorian)
+        losAngeles.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+        let day = try XCTUnwrap(shanghai.date(from: DateComponents(year: 2026, month: 8, day: 12)))
+
+        let dayKey = DailyPlayActivity.dayKey(for: day, calendar: shanghai)
+        let displayed = try XCTUnwrap(DailyPlayActivity.date(fromDayKey: dayKey, calendar: losAngeles))
+
+        XCTAssertEqual(dayKey, "2026-08-12")
+        XCTAssertEqual(losAngeles.dateComponents([.year, .month, .day], from: displayed), DateComponents(year: 2026, month: 8, day: 12))
+    }
+
+    @MainActor
+    func testLegacyMigrationPreservesCustomDataAndHistoryReferences() throws {
+        let container = try ModelContainer(
+            for: GameRecord.self,
+            PlaySnapshot.self,
+            DailyPlayActivity.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        let legacy = GameRecord(
+            applicationID: "switch:game",
+            platform: .switchConsole,
+            title: "Legacy Game",
+            totalMinutes: 300
+        )
+        legacy.isFavorite = true
+        legacy.personalNote = "不要丢失"
+        legacy.playStatus = .replay
+        let current = GameRecord(
+            applicationID: "switch:account-a:game",
+            accountID: "account-a",
+            titleID: "game",
+            platform: .switchConsole,
+            title: "Current Game",
+            totalMinutes: 120
+        )
+        let snapshot = PlaySnapshot(
+            gameID: legacy.applicationID,
+            accountID: "",
+            platform: .switchConsole,
+            totalMinutes: 300,
+            trophiesEarned: 0
+        )
+        let day = try XCTUnwrap(NintendoAPIClient.parsePlayedDay("2026-08-12"))
+        let activity = DailyPlayActivity(
+            activityID: "switch:game:2026-08-12",
+            gameID: legacy.applicationID,
+            accountID: "",
+            titleID: "game",
+            platform: .switchConsole,
+            day: day,
+            totalMinutes: 45
+        )
+        context.insert(legacy)
+        context.insert(current)
+        context.insert(snapshot)
+        context.insert(activity)
+        try context.save()
+
+        try LegacyRecordMigrator.migrate(
+            platform: .switchConsole,
+            accountID: "account-a",
+            modelContext: context
+        )
+
+        let games = try context.fetch(FetchDescriptor<GameRecord>())
+        XCTAssertEqual(games.count, 1)
+        XCTAssertEqual(games[0].applicationID, "switch:account-a:game")
+        XCTAssertEqual(games[0].totalMinutes, 300)
+        XCTAssertTrue(games[0].isFavorite)
+        XCTAssertEqual(games[0].personalNote, "不要丢失")
+        XCTAssertEqual(games[0].playStatus, .replay)
+        XCTAssertEqual(snapshot.gameID, "switch:account-a:game")
+        XCTAssertEqual(snapshot.accountID, "account-a")
+        XCTAssertEqual(activity.gameID, "switch:account-a:game")
+        XCTAssertEqual(activity.activityID, "switch:account-a:game:2026-08-12")
+        XCTAssertEqual(activity.accountID, "account-a")
     }
 
 	func testAIPromptsUseSharedGameBrainContext() {
@@ -621,6 +762,7 @@ final class YouJiDataTests: XCTestCase {
             games: []
         )
         staleConversation.messages = []
+        staleConversation.updatedAt = .distantPast
         target.mainContext.insert(staleConversation)
         target.mainContext.insert(AIProfileResult(
             id: profile.id,
@@ -631,13 +773,15 @@ final class YouJiDataTests: XCTestCase {
             gameCount: 0,
             totalMinutes: 0
         ))
-        target.mainContext.insert(SavedGamePlan(
+        let stalePlan = SavedGamePlan(
             id: plan.id,
             accountScopeKey: "switch:old",
             title: "旧计划",
             isCompleted: true
-        ))
-        target.mainContext.insert(DailyPlayActivity(
+        )
+        stalePlan.updatedAt = .distantPast
+        target.mainContext.insert(stalePlan)
+        let staleActivity = DailyPlayActivity(
             activityID: "switch:a:game:2026-08-13",
             gameID: "switch:a:game",
             accountID: "a",
@@ -645,7 +789,9 @@ final class YouJiDataTests: XCTestCase {
             platform: .switchConsole,
             day: .distantPast,
             totalMinutes: 1
-        ))
+        )
+        staleActivity.updatedAt = .distantPast
+        target.mainContext.insert(staleActivity)
         try target.mainContext.save()
         let restoreSummary = try ProductDataService.restore(data: data, modelContext: target.mainContext)
 
@@ -670,6 +816,175 @@ final class YouJiDataTests: XCTestCase {
         XCTAssertEqual(restoredPlan.title, "Game")
         XCTAssertEqual(restoredPlan.note, "下周重温")
         XCTAssertFalse(restoredPlan.isCompleted)
+    }
+
+    @MainActor
+    func testRestoreKeepsNewerLocalGameEdits() throws {
+        let source = try ModelContainer(
+            for: GameRecord.self,
+            PlaySnapshot.self,
+            DailyPlayActivity.self,
+            AIConversation.self,
+            AIProfileResult.self,
+            SavedGamePlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let oldGame = GameRecord(
+            applicationID: "switch:a:game",
+            accountID: "a",
+            titleID: "game",
+            platform: .switchConsole,
+            title: "Game",
+            totalMinutes: 100
+        )
+        oldGame.personalNote = "旧备注"
+        oldGame.updatedAt = .distantPast
+        source.mainContext.insert(oldGame)
+        try source.mainContext.save()
+        let backup = try ProductDataService.backupData(modelContext: source.mainContext)
+
+        let target = try ModelContainer(
+            for: GameRecord.self,
+            PlaySnapshot.self,
+            DailyPlayActivity.self,
+            AIConversation.self,
+            AIProfileResult.self,
+            SavedGamePlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let newerGame = GameRecord(
+            applicationID: "switch:a:game",
+            accountID: "a",
+            titleID: "game",
+            platform: .switchConsole,
+            title: "Game",
+            totalMinutes: 180
+        )
+        newerGame.personalNote = "本机新备注"
+        newerGame.updatedAt = .now
+        target.mainContext.insert(newerGame)
+        try target.mainContext.save()
+
+        try ProductDataService.restore(data: backup, modelContext: target.mainContext)
+
+        let restored = try XCTUnwrap(target.mainContext.fetch(FetchDescriptor<GameRecord>()).first)
+        XCTAssertEqual(restored.totalMinutes, 180)
+        XCTAssertEqual(restored.personalNote, "本机新备注")
+    }
+
+    @MainActor
+    func testRestoreComparesLegacyUserEditsBeforeUpdatingPlatformData() throws {
+        let source = try ModelContainer(
+            for: GameRecord.self,
+            PlaySnapshot.self,
+            DailyPlayActivity.self,
+            AIConversation.self,
+            AIProfileResult.self,
+            SavedGamePlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let backedUpGame = GameRecord(
+            applicationID: "switch:a:game",
+            accountID: "a",
+            titleID: "game",
+            platform: .switchConsole,
+            title: "Game",
+            totalMinutes: 180
+        )
+        backedUpGame.personalNote = "备份里的新备注"
+        backedUpGame.isFavorite = true
+        backedUpGame.userEditedAt = Date(timeIntervalSince1970: 200)
+        backedUpGame.updatedAt = Date(timeIntervalSince1970: 300)
+        source.mainContext.insert(backedUpGame)
+        try source.mainContext.save()
+        let backup = try ProductDataService.backupData(modelContext: source.mainContext)
+
+        let target = try ModelContainer(
+            for: GameRecord.self,
+            PlaySnapshot.self,
+            DailyPlayActivity.self,
+            AIConversation.self,
+            AIProfileResult.self,
+            SavedGamePlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let legacyGame = GameRecord(
+            applicationID: "switch:a:game",
+            accountID: "a",
+            titleID: "game",
+            platform: .switchConsole,
+            title: "Game",
+            totalMinutes: 100
+        )
+        legacyGame.personalNote = "本机旧备注"
+        legacyGame.updatedAt = Date(timeIntervalSince1970: 100)
+        target.mainContext.insert(legacyGame)
+        try target.mainContext.save()
+
+        try ProductDataService.restore(data: backup, modelContext: target.mainContext)
+
+        let restored = try XCTUnwrap(target.mainContext.fetch(FetchDescriptor<GameRecord>()).first)
+        XCTAssertEqual(restored.totalMinutes, 180)
+        XCTAssertEqual(restored.updatedAt, Date(timeIntervalSince1970: 300))
+        XCTAssertEqual(restored.personalNote, "备份里的新备注")
+        XCTAssertTrue(restored.isFavorite)
+        XCTAssertEqual(restored.userEditedAt, Date(timeIntervalSince1970: 200))
+    }
+
+    @MainActor
+    func testRestoreImportsUserFieldsEvenWhenPlatformDataIsNewer() throws {
+        let source = try ModelContainer(
+            for: GameRecord.self,
+            PlaySnapshot.self,
+            DailyPlayActivity.self,
+            AIConversation.self,
+            AIProfileResult.self,
+            SavedGamePlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let backedUpGame = GameRecord(
+            applicationID: "switch:a:game",
+            accountID: "a",
+            titleID: "game",
+            platform: .switchConsole,
+            title: "Game",
+            totalMinutes: 100
+        )
+        backedUpGame.personalNote = "备份里的私人备注"
+        backedUpGame.isFavorite = true
+        backedUpGame.updatedAt = .distantPast
+        backedUpGame.userEditedAt = Date(timeIntervalSince1970: 100)
+        source.mainContext.insert(backedUpGame)
+        try source.mainContext.save()
+        let backup = try ProductDataService.backupData(modelContext: source.mainContext)
+
+        let target = try ModelContainer(
+            for: GameRecord.self,
+            PlaySnapshot.self,
+            DailyPlayActivity.self,
+            AIConversation.self,
+            AIProfileResult.self,
+            SavedGamePlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let freshlySyncedGame = GameRecord(
+            applicationID: "switch:a:game",
+            accountID: "a",
+            titleID: "game",
+            platform: .switchConsole,
+            title: "Game",
+            totalMinutes: 180
+        )
+        freshlySyncedGame.updatedAt = .now
+        target.mainContext.insert(freshlySyncedGame)
+        try target.mainContext.save()
+
+        try ProductDataService.restore(data: backup, modelContext: target.mainContext)
+
+        let restored = try XCTUnwrap(target.mainContext.fetch(FetchDescriptor<GameRecord>()).first)
+        XCTAssertEqual(restored.totalMinutes, 180)
+        XCTAssertEqual(restored.personalNote, "备份里的私人备注")
+        XCTAssertTrue(restored.isFavorite)
     }
 }
 

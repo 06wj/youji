@@ -110,11 +110,12 @@ actor NintendoAPIClient {
     ) -> NintendoNormalizedHistory {
         let today = calendar.startOfDay(for: now)
         var weeklyByTitle: [String: [Int]] = [:]
-        var dailyByTitle: [String: [Date: Int]] = [:]
+        var dailyByTitle: [String: [String: Int]] = [:]
 
         for day in history.recentPlayHistories {
             guard let date = Self.parsePlayedDay(day.playedDate) else { continue }
             let playedDay = calendar.startOfDay(for: date)
+            let playedDayKey = String(day.playedDate.prefix(10))
             let offset = calendar.dateComponents([.day], from: playedDay, to: today).day ?? 99
             guard (0...6).contains(offset) else { continue }
             for item in day.dailyPlayHistories {
@@ -123,7 +124,7 @@ actor NintendoAPIClient {
                 weeklyByTitle[item.titleID] = week
 
                 var titleDays = dailyByTitle[item.titleID] ?? [:]
-                titleDays[playedDay, default: 0] += item.totalPlayedMinutes
+                titleDays[playedDayKey, default: 0] += item.totalPlayedMinutes
                 dailyByTitle[item.titleID] = titleDays
             }
         }
@@ -143,10 +144,16 @@ actor NintendoAPIClient {
         let dailyActivities: [SyncedDailyActivity] = dailyByTitle.flatMap { titleEntry in
             let titleID = titleEntry.key
             return titleEntry.value.compactMap { dayEntry -> SyncedDailyActivity? in
-                let day = dayEntry.key
+                let dayKey = dayEntry.key
                 let minutes = dayEntry.value
-                guard minutes > 0 else { return nil }
-                return SyncedDailyActivity(titleID: titleID, day: day, totalMinutes: minutes)
+                guard minutes > 0,
+                      let day = DailyPlayActivity.date(fromDayKey: dayKey, calendar: calendar) else { return nil }
+                return SyncedDailyActivity(
+                    titleID: titleID,
+                    dayKey: dayKey,
+                    day: day,
+                    totalMinutes: minutes
+                )
             }
         }
         return NintendoNormalizedHistory(games: games, dailyActivities: dailyActivities)

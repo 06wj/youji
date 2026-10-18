@@ -5,12 +5,14 @@ struct AIChatListView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \AIConversation.updatedAt, order: .reverse) private var conversations: [AIConversation]
+    @Query private var allGames: [GameRecord]
 
     let games: [GameRecord]
     let accountScopeKey: String
 
     @State private var path: [UUID] = []
     @State private var conversationToDelete: AIConversation?
+    @State private var persistenceError: String?
 
     private var scopedConversations: [AIConversation] {
         conversations.filter { $0.accountScopeKey == accountScopeKey }
@@ -70,10 +72,24 @@ struct AIChatListView: View {
             }
             .task {
                 let legacy = conversations.filter { $0.accountScopeKey.isEmpty }
-                if !legacy.isEmpty, !accountScopeKey.isEmpty {
+                if !legacy.isEmpty,
+                   !accountScopeKey.isEmpty,
+                   AccountScope.unambiguousArchiveScopeKey(for: allGames) == accountScopeKey {
                     legacy.forEach { $0.accountScopeKey = accountScopeKey }
-                    try? modelContext.save()
+                    do { try modelContext.save() }
+                    catch {
+                        modelContext.rollback()
+                        persistenceError = error.localizedDescription
+                    }
                 }
+            }
+            .alert("本地保存失败", isPresented: Binding(
+                get: { persistenceError != nil },
+                set: { if !$0 { persistenceError = nil } }
+            )) {
+                Button("知道了", role: .cancel) {}
+            } message: {
+                Text(persistenceError ?? "未知错误")
             }
             .confirmationDialog(
                 "删除这段对话？",
@@ -156,14 +172,23 @@ struct AIChatListView: View {
         guard !chatGames.isEmpty else { return }
         let conversation = AIConversation(accountScopeKey: accountScopeKey, games: chatGames)
         modelContext.insert(conversation)
-        try? modelContext.save()
-        path.append(conversation.id)
+        do {
+            try modelContext.save()
+            path.append(conversation.id)
+        } catch {
+            modelContext.rollback()
+            persistenceError = error.localizedDescription
+        }
     }
 
     private func deleteConversation() {
         guard let conversationToDelete else { return }
         modelContext.delete(conversationToDelete)
-        try? modelContext.save()
+        do { try modelContext.save() }
+        catch {
+            modelContext.rollback()
+            persistenceError = error.localizedDescription
+        }
         self.conversationToDelete = nil
     }
 

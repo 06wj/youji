@@ -103,7 +103,7 @@ struct AIChatView: View {
                 modelContext.delete(conversation)
                 try? modelContext.save()
             } else {
-                persistMessages()
+                try? persistMessages()
             }
         }
         .overlay(alignment: .top) {
@@ -324,7 +324,14 @@ struct AIChatView: View {
            conversation.title == "新对话" {
             conversation.title = provisionalTitle(from: text)
         }
-        persistMessages()
+        do {
+            try persistMessages()
+        } catch {
+            messages.removeLast()
+            conversation.messages = messages
+            errorMessage = "消息未能保存：\(error.localizedDescription)"
+            return
+        }
         draft = ""
         composerFocused = false
         isSending = true
@@ -364,7 +371,13 @@ struct AIChatView: View {
                 try Task.checkCancellation()
                 guard activeRequestID == requestID else { return }
                 messages.append(AIChatMessage(role: .assistant, content: answer))
-                persistMessages()
+                do {
+                    try persistMessages()
+                } catch {
+                    messages.removeLast()
+                    conversation.messages = messages
+                    throw error
+                }
                 generateTitleIfNeeded(apiKey: apiKey, model: model)
             } catch is CancellationError {
                 // Leaving the view cancels the reply without losing the user's message.
@@ -386,12 +399,19 @@ struct AIChatView: View {
     private func savePlanDraft() {
         let title = planTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
-        modelContext.insert(SavedGamePlan(
+        let plan = SavedGamePlan(
             accountScopeKey: conversation.accountScopeKey,
             title: title,
             note: planNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        ))
-        try? modelContext.save()
+        )
+        modelContext.insert(plan)
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.delete(plan)
+            errorMessage = "计划未能保存：\(error.localizedDescription)"
+            return
+        }
         showPlanEditor = false
         planTitleDraft = ""
         planNoteDraft = ""
@@ -399,9 +419,9 @@ struct AIChatView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { withAnimation { planSaved = false } }
     }
 
-    private func persistMessages() {
+    private func persistMessages() throws {
         conversation.messages = messages
-        try? modelContext.save()
+        try modelContext.save()
     }
 
     private func generateTitleIfNeeded(apiKey: String, model: String) {
@@ -423,10 +443,18 @@ struct AIChatView: View {
                     apiKey: apiKey,
                     model: model
                 )
+                let previousTitle = conversation.title
+                let previousUpdatedAt = conversation.updatedAt
                 conversation.title = title
                 conversation.titleGeneratedAt = .now
                 conversation.updatedAt = .now
-                try? modelContext.save()
+                do {
+                    try modelContext.save()
+                } catch {
+                    conversation.title = previousTitle
+                    conversation.titleGeneratedAt = nil
+                    conversation.updatedAt = previousUpdatedAt
+                }
             } catch {
                 // A generated title is optional; retry after a later reply.
             }

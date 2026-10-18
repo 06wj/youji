@@ -10,20 +10,18 @@ struct PlayCalendarSection: View {
 
     init(accountID: String, games: [GameRecord]) {
         let platformRaw = GamePlatform.switchConsole.rawValue
-        var descriptor = FetchDescriptor<DailyPlayActivity>(
+        let descriptor = FetchDescriptor<DailyPlayActivity>(
             predicate: #Predicate {
                 $0.platformRaw == platformRaw && $0.accountID == accountID
-            },
-            sortBy: [SortDescriptor(\.day, order: .reverse)]
+            }
         )
-        descriptor.fetchLimit = 1
         _latestActivities = Query(descriptor)
         self.accountID = accountID
         self.games = games
     }
 
     var body: some View {
-        if let latestDay = latestActivities.first?.day {
+        if let latestDay = latestActivities.max(by: { $0.resolvedDayKey < $1.resolvedDayKey })?.displayDay {
             Button {
                 isPresented = true
             } label: {
@@ -80,10 +78,10 @@ struct PlayCalendarView: View {
     }
 
     private var days: [PlayCalendarDay] {
-        Dictionary(grouping: activities) { Calendar.current.startOfDay(for: $0.day) }
+        Dictionary(grouping: activities, by: \.resolvedDayKey)
             .map { day, activities in
                 PlayCalendarDay(
-                    day: day,
+                    day: DailyPlayActivity.date(fromDayKey: day) ?? activities[0].displayDay,
                     activities: activities.sorted { $0.totalMinutes > $1.totalMinutes }
                 )
             }

@@ -26,6 +26,7 @@ final class GameRecord {
     var platinumTrophiesEarned: Int = 0
     var trophiesSyncedAt: Date?
     var updatedAt: Date
+    var userEditedAt: Date = Date.distantPast
     var isFavorite: Bool = false
     var isManuallyHidden: Bool = false
     var isPinnedVisible: Bool = false
@@ -91,6 +92,16 @@ final class GameRecord {
         set { playStatusRaw = newValue.rawValue }
     }
 
+    var resolvedUserEditedAt: Date {
+        if userEditedAt != .distantPast { return userEditedAt }
+        let hasLegacyCustomization = isFavorite
+            || isManuallyHidden
+            || isPinnedVisible
+            || !personalNote.isEmpty
+            || playStatus != .played
+        return hasLegacyCustomization ? updatedAt : .distantPast
+    }
+
     static func recordID(platform: GamePlatform, accountID: String, titleID: String) -> String {
         "\(platform == .playStation ? "ps" : "switch"):\(accountID):\(titleID)"
     }
@@ -154,6 +165,45 @@ enum AccountScope {
         }
     }
 
+    static func visibleScopeKey(
+        for games: [GameRecord],
+        playStationAccountID: String,
+        nintendoAccountID: String
+    ) -> String {
+        let playStationDisplayID = displayAccountID(
+            for: .playStation,
+            currentAccountID: playStationAccountID,
+            games: games
+        ) ?? ""
+        let nintendoDisplayID = displayAccountID(
+            for: .switchConsole,
+            currentAccountID: nintendoAccountID,
+            games: games
+        ) ?? ""
+        return key(
+            playStationAccountID: playStationDisplayID,
+            nintendoAccountID: nintendoDisplayID
+        )
+    }
+
+    static func unambiguousArchiveScopeKey(for games: [GameRecord]) -> String? {
+        let playStationAccountIDs = Set(games.lazy
+            .filter { $0.platform == .playStation && !$0.accountID.isEmpty }
+            .map(\.accountID))
+        let nintendoAccountIDs = Set(games.lazy
+            .filter { $0.platform == .switchConsole && !$0.accountID.isEmpty }
+            .map(\.accountID))
+        guard playStationAccountIDs.count <= 1,
+              nintendoAccountIDs.count <= 1 else {
+            return nil
+        }
+        let scopeKey = key(
+            playStationAccountID: playStationAccountIDs.first ?? "",
+            nintendoAccountID: nintendoAccountIDs.first ?? ""
+        )
+        return scopeKey.isEmpty ? nil : scopeKey
+    }
+
     private static func displayAccountID(
         for platform: GamePlatform,
         currentAccountID: String,
@@ -214,6 +264,7 @@ final class DailyPlayActivity {
     var accountID: String
     var titleID: String
     var platformRaw: String
+    var dayKey: String = ""
     var day: Date
     var totalMinutes: Int
     var updatedAt: Date
@@ -232,13 +283,25 @@ final class DailyPlayActivity {
         self.accountID = accountID
         self.titleID = titleID
         self.platformRaw = platform.rawValue
-        self.day = Calendar.current.startOfDay(for: day)
+        let resolvedDayKey = Self.dayKey(for: day)
+        self.dayKey = resolvedDayKey
+        self.day = Self.date(fromDayKey: resolvedDayKey) ?? Calendar.current.startOfDay(for: day)
         self.totalMinutes = totalMinutes
         self.updatedAt = .now
     }
 
     var platform: GamePlatform {
         GamePlatform(rawValue: platformRaw) ?? .switchConsole
+    }
+
+    var resolvedDayKey: String {
+        if !dayKey.isEmpty { return dayKey }
+        if let storedKey = Self.dayKey(fromActivityID: activityID) { return storedKey }
+        return Self.dayKey(for: day)
+    }
+
+    var displayDay: Date {
+        Self.date(fromDayKey: resolvedDayKey) ?? Calendar.current.startOfDay(for: day)
     }
 
     static func recordID(
@@ -248,14 +311,46 @@ final class DailyPlayActivity {
         day: Date,
         calendar: Calendar = .current
     ) -> String {
+        recordID(
+            platform: platform,
+            accountID: accountID,
+            titleID: titleID,
+            dayKey: dayKey(for: day, calendar: calendar)
+        )
+    }
+
+    static func recordID(
+        platform: GamePlatform,
+        accountID: String,
+        titleID: String,
+        dayKey: String
+    ) -> String {
+        "\(GameRecord.recordID(platform: platform, accountID: accountID, titleID: titleID)):\(dayKey)"
+    }
+
+    static func dayKey(for day: Date, calendar: Calendar = .current) -> String {
         let components = calendar.dateComponents([.year, .month, .day], from: day)
-        let dayKey = String(
+        return String(
             format: "%04d-%02d-%02d",
             components.year ?? 0,
             components.month ?? 0,
             components.day ?? 0
         )
-        return "\(GameRecord.recordID(platform: platform, accountID: accountID, titleID: titleID)):\(dayKey)"
+    }
+
+    static func date(fromDayKey dayKey: String, calendar: Calendar = .current) -> Date? {
+        let parts = dayKey.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+    }
+
+    static func dayKey(fromActivityID activityID: String) -> String? {
+        let suffix = String(activityID.suffix(10))
+        guard suffix.count == 10,
+              suffix[suffix.index(suffix.startIndex, offsetBy: 4)] == "-",
+              suffix[suffix.index(suffix.startIndex, offsetBy: 7)] == "-",
+              date(fromDayKey: suffix) != nil else { return nil }
+        return suffix
     }
 }
 
@@ -276,6 +371,7 @@ struct SyncedGame: Sendable {
 
 struct SyncedDailyActivity: Sendable {
     let titleID: String
+    let dayKey: String
     let day: Date
     let totalMinutes: Int
 }
@@ -319,6 +415,7 @@ final class SavedGamePlan {
     var title: String
     var note: String
     var createdAt: Date
+    var updatedAt: Date = Date.distantPast
     var isCompleted: Bool
 
     init(
@@ -334,6 +431,7 @@ final class SavedGamePlan {
         self.title = title
         self.note = note
         self.createdAt = createdAt
+        self.updatedAt = createdAt
         self.isCompleted = isCompleted
     }
 }

@@ -28,10 +28,26 @@ final class SyncCoordinator: ObservableObject {
         return try? JSONDecoder().decode(PlayStationTrophySummary.self, from: data)
     }()
     @Published var lastSyncAt = UserDefaults.standard.object(forKey: Keys.lastSyncAt) as? Date
-    @Published var lastNintendoSyncAt = UserDefaults.standard.object(forKey: Keys.lastNintendoSyncAt) as? Date
-    @Published var lastPlayStationSyncAt = UserDefaults.standard.object(forKey: Keys.lastPlayStationSyncAt) as? Date
-    @Published var nintendoReceipt = SyncCoordinator.loadReceipt(forKey: Keys.nintendoReceipt)
-    @Published var playStationReceipt = SyncCoordinator.loadReceipt(forKey: Keys.playStationReceipt)
+    @Published var lastNintendoSyncAt = SyncCoordinator.loadSyncDate(
+        platform: .switchConsole,
+        accountID: UserDefaults.standard.string(forKey: Keys.nintendoAccountID) ?? "",
+        allowLegacy: true
+    )
+    @Published var lastPlayStationSyncAt = SyncCoordinator.loadSyncDate(
+        platform: .playStation,
+        accountID: UserDefaults.standard.string(forKey: Keys.playStationAccountID) ?? "",
+        allowLegacy: true
+    )
+    @Published var nintendoReceipt = SyncCoordinator.loadReceipt(
+        platform: .switchConsole,
+        accountID: UserDefaults.standard.string(forKey: Keys.nintendoAccountID) ?? "",
+        allowLegacy: true
+    )
+    @Published var playStationReceipt = SyncCoordinator.loadReceipt(
+        platform: .playStation,
+        accountID: UserDefaults.standard.string(forKey: Keys.playStationAccountID) ?? "",
+        allowLegacy: true
+    )
     @Published var errorMessage: String?
 
     private let nintendoAPI = NintendoAPIClient()
@@ -65,9 +81,11 @@ final class SyncCoordinator: ObservableObject {
         await performSync {
             let statesBeforeAuthorization = libraryStates(platform: .switchConsole, modelContext: modelContext)
             let token = try await nintendoAPI.exchangeSessionToken(code: code, verifier: verifier)
+            let payload = try await nintendoAPI.loadLibrary(sessionToken: token)
             try KeychainStore.save(token, account: Keys.nintendoToken)
             isNintendoConnected = true
-            try await loadNintendo(modelContext: modelContext, token: token)
+            selectNintendoIdentity(payload.user)
+            try await loadNintendo(modelContext: modelContext, token: token, loadedPayload: payload)
             let before = statesBeforeAuthorization[currentNintendoAccountID] ?? [:]
             completeReceipt(platform: .switchConsole, before: before, trophyFailures: 0, modelContext: modelContext)
         }
@@ -77,9 +95,15 @@ final class SyncCoordinator: ObservableObject {
         await performSync {
             let statesBeforeAuthorization = libraryStates(platform: .playStation, modelContext: modelContext)
             let tokens = try await playStationAPI.authorize(npsso: npsso)
+            let payload = try await playStationAPI.loadGames(accessToken: tokens.accessToken)
             try KeychainStore.save(tokens.refreshToken, account: Keys.playStationRefreshToken)
             isPlayStationConnected = true
-            let trophyFailures = try await loadPlayStation(modelContext: modelContext, accessToken: tokens.accessToken)
+            selectPlayStationIdentity(payload)
+            let trophyFailures = try await loadPlayStation(
+                modelContext: modelContext,
+                accessToken: tokens.accessToken,
+                loadedPayload: payload
+            )
             let before = statesBeforeAuthorization[currentPlayStationAccountID] ?? [:]
             completeReceipt(platform: .playStation, before: before, trophyFailures: trophyFailures, modelContext: modelContext)
         }
@@ -114,8 +138,14 @@ final class SyncCoordinator: ObservableObject {
         do {
             let before = libraryState(platform: .playStation, accountID: currentPlayStationAccountID, modelContext: modelContext)
             let tokens = try await playStationAPI.refresh(refreshToken: refreshToken)
+            let payload = try await playStationAPI.loadGames(accessToken: tokens.accessToken)
             try KeychainStore.save(tokens.refreshToken, account: Keys.playStationRefreshToken)
-            let trophyFailures = try await loadPlayStation(modelContext: modelContext, accessToken: tokens.accessToken)
+            selectPlayStationIdentity(payload)
+            let trophyFailures = try await loadPlayStation(
+                modelContext: modelContext,
+                accessToken: tokens.accessToken,
+                loadedPayload: payload
+            )
             completeReceipt(platform: .playStation, before: before, trophyFailures: trophyFailures, modelContext: modelContext)
             errorMessage = nil
             UserDefaults.standard.removeObject(forKey: Keys.lastSyncError)
@@ -147,6 +177,8 @@ final class SyncCoordinator: ObservableObject {
         isNintendoConnected = false
         nintendoAccountName = ""
         currentNintendoAccountID = ""
+        lastNintendoSyncAt = nil
+        nintendoReceipt = nil
         UserDefaults.standard.removeObject(forKey: Keys.nintendoAccountName)
         UserDefaults.standard.removeObject(forKey: Keys.nintendoAccountID)
     }
@@ -157,6 +189,8 @@ final class SyncCoordinator: ObservableObject {
         playStationAccountName = ""
         currentPlayStationAccountID = ""
         playStationTrophies = nil
+        lastPlayStationSyncAt = nil
+        playStationReceipt = nil
         UserDefaults.standard.removeObject(forKey: Keys.playStationAccountName)
         UserDefaults.standard.removeObject(forKey: Keys.playStationAccountID)
     }
@@ -184,14 +218,17 @@ final class SyncCoordinator: ObservableObject {
             Keys.playStationAccountName,
             Keys.playStationAccountID,
             Keys.lastSyncAt,
-            Keys.lastNintendoSyncAt,
-            Keys.lastPlayStationSyncAt,
-            Keys.nintendoReceipt,
-            Keys.playStationReceipt,
+            Keys.legacyLastNintendoSyncAt,
+            Keys.legacyLastPlayStationSyncAt,
+            Keys.legacyNintendoReceipt,
+            Keys.legacyPlayStationReceipt,
             Keys.lastSyncError,
             Keys.didBackfillNintendoDailyActivities,
         ].forEach(defaults.removeObject(forKey:))
-        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("playstation-trophies.") {
+        for key in defaults.dictionaryRepresentation().keys where
+            key.hasPrefix("playstation-trophies.")
+                || key.hasPrefix("sync-date.")
+                || key.hasPrefix("sync-receipt.") {
             defaults.removeObject(forKey: key)
         }
     }
@@ -259,9 +296,19 @@ final class SyncCoordinator: ObservableObject {
         }
     }
 
-    private func loadNintendo(modelContext: ModelContext, token: String) async throws {
+    private func loadNintendo(
+        modelContext: ModelContext,
+        token: String,
+        loadedPayload: NintendoSyncPayload? = nil
+    ) async throws {
         do {
-            let payload = try await nintendoAPI.loadLibrary(sessionToken: token)
+            let payload: NintendoSyncPayload
+            if let loadedPayload {
+                payload = loadedPayload
+            } else {
+                payload = try await nintendoAPI.loadLibrary(sessionToken: token)
+            }
+            selectNintendoIdentity(payload.user)
             try upsert(payload.games, platform: .switchConsole, accountID: payload.user.id, preserveTrophies: false, modelContext: modelContext)
             try upsertDailyActivities(
                 payload.dailyActivities,
@@ -269,36 +316,28 @@ final class SyncCoordinator: ObservableObject {
                 modelContext: modelContext
             )
             try recordSnapshots(platform: .switchConsole, accountID: payload.user.id, modelContext: modelContext)
-            nintendoAccountName = payload.user.nickname
-            currentNintendoAccountID = payload.user.id
-            isNintendoConnected = true
-            UserDefaults.standard.set(nintendoAccountName, forKey: Keys.nintendoAccountName)
-            UserDefaults.standard.set(currentNintendoAccountID, forKey: Keys.nintendoAccountID)
-            markSynced(platform: .switchConsole)
+            markSynced(platform: .switchConsole, accountID: payload.user.id)
         } catch {
             handle(error, platform: .switchConsole)
             throw error
         }
     }
 
-    private func loadPlayStation(modelContext: ModelContext, accessToken: String) async throws -> Int {
+    private func loadPlayStation(
+        modelContext: ModelContext,
+        accessToken: String,
+        loadedPayload: PlayStationGamesPayload? = nil
+    ) async throws -> Int {
         do {
             var trophyFailures = 0
-            let payload = try await playStationAPI.loadGames(accessToken: accessToken)
-            try upsert(payload.games, platform: .playStation, accountID: payload.accountID, preserveTrophies: true, modelContext: modelContext)
-
-            if payload.accountID != currentPlayStationAccountID {
-                if let data = UserDefaults.standard.data(forKey: Keys.playStationTrophies(accountID: payload.accountID)) {
-                    playStationTrophies = try? JSONDecoder().decode(PlayStationTrophySummary.self, from: data)
-                } else {
-                    playStationTrophies = nil
-                }
+            let payload: PlayStationGamesPayload
+            if let loadedPayload {
+                payload = loadedPayload
+            } else {
+                payload = try await playStationAPI.loadGames(accessToken: accessToken)
             }
-            playStationAccountName = payload.accountName
-            currentPlayStationAccountID = payload.accountID
-            isPlayStationConnected = true
-            UserDefaults.standard.set(playStationAccountName, forKey: Keys.playStationAccountName)
-            UserDefaults.standard.set(currentPlayStationAccountID, forKey: Keys.playStationAccountID)
+            selectPlayStationIdentity(payload)
+            try upsert(payload.games, platform: .playStation, accountID: payload.accountID, preserveTrophies: true, modelContext: modelContext)
 
             let trophyRecords = try records(
                 platform: .playStation,
@@ -356,7 +395,7 @@ final class SyncCoordinator: ObservableObject {
             }
 
             try recordSnapshots(platform: .playStation, accountID: payload.accountID, modelContext: modelContext)
-            markSynced(platform: .playStation)
+            markSynced(platform: .playStation, accountID: payload.accountID)
             return trophyFailures
         } catch {
             handle(error, platform: .playStation)
@@ -410,12 +449,11 @@ final class SyncCoordinator: ObservableObject {
         accountID: String,
         modelContext: ModelContext
     ) throws {
-        guard let earliestDay = activities.map(\.day).min() else { return }
+        guard !activities.isEmpty else { return }
         let platformRaw = GamePlatform.switchConsole.rawValue
         let descriptor = FetchDescriptor<DailyPlayActivity>(predicate: #Predicate {
             $0.platformRaw == platformRaw
                 && $0.accountID == accountID
-                && $0.day >= earliestDay
         })
         let existing = try modelContext.fetch(descriptor)
         let byID = Dictionary(uniqueKeysWithValues: existing.map { ($0.activityID, $0) })
@@ -425,7 +463,7 @@ final class SyncCoordinator: ObservableObject {
                 platform: .switchConsole,
                 accountID: accountID,
                 titleID: item.titleID,
-                day: item.day
+                dayKey: item.dayKey
             )
             let activity = byID[activityID] ?? DailyPlayActivity(
                 activityID: activityID,
@@ -440,7 +478,8 @@ final class SyncCoordinator: ObservableObject {
                 day: item.day,
                 totalMinutes: item.totalMinutes
             )
-            activity.day = Calendar.current.startOfDay(for: item.day)
+            activity.dayKey = item.dayKey
+            activity.day = DailyPlayActivity.date(fromDayKey: item.dayKey) ?? Calendar.current.startOfDay(for: item.day)
             activity.totalMinutes = item.totalMinutes
             activity.updatedAt = .now
             if byID[activityID] == nil { modelContext.insert(activity) }
@@ -466,25 +505,11 @@ final class SyncCoordinator: ObservableObject {
         accountID: String,
         modelContext: ModelContext
     ) throws {
-        guard !accountID.isEmpty else { return }
-        let platformRaw = platform.rawValue
-        let descriptor = FetchDescriptor<GameRecord>(predicate: #Predicate {
-            $0.platformRaw == platformRaw
-        })
-        let records = try modelContext.fetch(descriptor)
-        let existingIDs = Set(records.map(\.applicationID))
-        for record in records where record.platform == platform && record.accountID.isEmpty {
-            let titleID = record.resolvedTitleID
-            let newID = GameRecord.recordID(platform: platform, accountID: accountID, titleID: titleID)
-            if existingIDs.contains(newID) {
-                modelContext.delete(record)
-            } else {
-                record.accountID = accountID
-                record.titleID = titleID
-                record.applicationID = newID
-            }
-        }
-        try modelContext.save()
+        try LegacyRecordMigrator.migrate(
+            platform: platform,
+            accountID: accountID,
+            modelContext: modelContext
+        )
     }
 
     private func recordSnapshots(
@@ -519,16 +544,47 @@ final class SyncCoordinator: ObservableObject {
         return try modelContext.fetch(descriptor)
     }
 
-    private func markSynced(platform: GamePlatform) {
+    private func selectNintendoIdentity(_ user: NintendoUser) {
+        let changedAccount = currentNintendoAccountID != user.id
+        currentNintendoAccountID = user.id
+        nintendoAccountName = user.nickname
+        isNintendoConnected = true
+        UserDefaults.standard.set(user.id, forKey: Keys.nintendoAccountID)
+        UserDefaults.standard.set(user.nickname, forKey: Keys.nintendoAccountName)
+        if changedAccount {
+            lastNintendoSyncAt = Self.loadSyncDate(platform: .switchConsole, accountID: user.id)
+            nintendoReceipt = Self.loadReceipt(platform: .switchConsole, accountID: user.id)
+        }
+    }
+
+    private func selectPlayStationIdentity(_ payload: PlayStationGamesPayload) {
+        let changedAccount = currentPlayStationAccountID != payload.accountID
+        currentPlayStationAccountID = payload.accountID
+        playStationAccountName = payload.accountName
+        isPlayStationConnected = true
+        UserDefaults.standard.set(payload.accountID, forKey: Keys.playStationAccountID)
+        UserDefaults.standard.set(payload.accountName, forKey: Keys.playStationAccountName)
+        if changedAccount {
+            lastPlayStationSyncAt = Self.loadSyncDate(platform: .playStation, accountID: payload.accountID)
+            playStationReceipt = Self.loadReceipt(platform: .playStation, accountID: payload.accountID)
+            if let data = UserDefaults.standard.data(forKey: Keys.playStationTrophies(accountID: payload.accountID)) {
+                playStationTrophies = try? JSONDecoder().decode(PlayStationTrophySummary.self, from: data)
+            } else {
+                playStationTrophies = nil
+            }
+        }
+    }
+
+    private func markSynced(platform: GamePlatform, accountID: String) {
         lastSyncAt = .now
         UserDefaults.standard.set(lastSyncAt, forKey: Keys.lastSyncAt)
         switch platform {
         case .playStation:
             lastPlayStationSyncAt = lastSyncAt
-            UserDefaults.standard.set(lastSyncAt, forKey: Keys.lastPlayStationSyncAt)
+            UserDefaults.standard.set(lastSyncAt, forKey: Keys.syncDate(platform: platform, accountID: accountID))
         case .switchConsole:
             lastNintendoSyncAt = lastSyncAt
-            UserDefaults.standard.set(lastSyncAt, forKey: Keys.lastNintendoSyncAt)
+            UserDefaults.standard.set(lastSyncAt, forKey: Keys.syncDate(platform: platform, accountID: accountID))
         }
     }
 
@@ -592,10 +648,10 @@ final class SyncCoordinator: ObservableObject {
         switch platform {
         case .playStation:
             playStationReceipt = receipt
-            key = Keys.playStationReceipt
+            key = Keys.receipt(platform: platform, accountID: accountID)
         case .switchConsole:
             nintendoReceipt = receipt
-            key = Keys.nintendoReceipt
+            key = Keys.receipt(platform: platform, accountID: accountID)
         }
         if let data = try? JSONEncoder().encode(receipt) {
             UserDefaults.standard.set(data, forKey: key)
@@ -607,17 +663,49 @@ final class SyncCoordinator: ObservableObject {
         return try? JSONDecoder().decode(PlatformSyncReceipt.self, from: data)
     }
 
+    private static func loadReceipt(
+        platform: GamePlatform,
+        accountID: String,
+        allowLegacy: Bool = false
+    ) -> PlatformSyncReceipt? {
+        guard !accountID.isEmpty else { return nil }
+        let scopedKey = Keys.receipt(platform: platform, accountID: accountID)
+        if let scoped = loadReceipt(forKey: scopedKey) { return scoped }
+        guard allowLegacy,
+              let legacy = loadReceipt(
+                forKey: platform == .playStation ? Keys.legacyPlayStationReceipt : Keys.legacyNintendoReceipt
+              ) else { return nil }
+        if let data = try? JSONEncoder().encode(legacy) {
+            UserDefaults.standard.set(data, forKey: scopedKey)
+        }
+        return legacy
+    }
+
+    private static func loadSyncDate(
+        platform: GamePlatform,
+        accountID: String,
+        allowLegacy: Bool = false
+    ) -> Date? {
+        guard !accountID.isEmpty else { return nil }
+        let scopedKey = Keys.syncDate(platform: platform, accountID: accountID)
+        if let scoped = UserDefaults.standard.object(forKey: scopedKey) as? Date { return scoped }
+        guard allowLegacy,
+              let legacy = UserDefaults.standard.object(
+                forKey: platform == .playStation ? Keys.legacyLastPlayStationSyncAt : Keys.legacyLastNintendoSyncAt
+              ) as? Date else { return nil }
+        UserDefaults.standard.set(legacy, forKey: scopedKey)
+        return legacy
+    }
+
     private func handle(_ error: Error, platform: GamePlatform) {
         switch platform {
         case .switchConsole:
             if case NintendoSyncError.authenticationExpired = error {
-                KeychainStore.delete(account: Keys.nintendoToken)
-                isNintendoConnected = false
+                disconnectNintendo()
             }
         case .playStation:
             if case PlayStationSyncError.authenticationExpired = error {
-                KeychainStore.delete(account: Keys.playStationRefreshToken)
-                isPlayStationConnected = false
+                disconnectPlayStation()
             }
         }
         errorMessage = error.localizedDescription
@@ -633,11 +721,105 @@ final class SyncCoordinator: ObservableObject {
         static let playStationAccountID = "playstation-account-id"
         static func playStationTrophies(accountID: String) -> String { "playstation-trophies.\(accountID)" }
         static let lastSyncAt = "last-sync-at"
-        static let lastNintendoSyncAt = "last-nintendo-sync-at"
-        static let lastPlayStationSyncAt = "last-playstation-sync-at"
-        static let nintendoReceipt = "nintendo-sync-receipt"
-        static let playStationReceipt = "playstation-sync-receipt"
+        static let legacyLastNintendoSyncAt = "last-nintendo-sync-at"
+        static let legacyLastPlayStationSyncAt = "last-playstation-sync-at"
+        static let legacyNintendoReceipt = "nintendo-sync-receipt"
+        static let legacyPlayStationReceipt = "playstation-sync-receipt"
+        static func syncDate(platform: GamePlatform, accountID: String) -> String {
+            "sync-date.\(platform == .playStation ? "ps" : "switch").\(accountID)"
+        }
+        static func receipt(platform: GamePlatform, accountID: String) -> String {
+            "sync-receipt.\(platform == .playStation ? "ps" : "switch").\(accountID)"
+        }
         static let lastSyncError = "last-sync-error"
         static let didBackfillNintendoDailyActivities = "did-backfill-nintendo-daily-activities-v1"
+    }
+}
+
+@MainActor
+enum LegacyRecordMigrator {
+    static func migrate(
+        platform: GamePlatform,
+        accountID: String,
+        modelContext: ModelContext
+    ) throws {
+        guard !accountID.isEmpty else { return }
+        let platformRaw = platform.rawValue
+        let descriptor = FetchDescriptor<GameRecord>(predicate: #Predicate {
+            $0.platformRaw == platformRaw
+        })
+        let records = try modelContext.fetch(descriptor)
+        var recordsByID = Dictionary(uniqueKeysWithValues: records.map { ($0.applicationID, $0) })
+        let snapshots = try modelContext.fetch(FetchDescriptor<PlaySnapshot>())
+        let activities = try modelContext.fetch(FetchDescriptor<DailyPlayActivity>())
+        var activitiesByID = Dictionary(uniqueKeysWithValues: activities.map { ($0.activityID, $0) })
+
+        for legacy in records where legacy.platform == platform && legacy.accountID.isEmpty {
+            let oldID = legacy.applicationID
+            let titleID = legacy.resolvedTitleID
+            let newID = GameRecord.recordID(platform: platform, accountID: accountID, titleID: titleID)
+
+            for snapshot in snapshots where snapshot.gameID == oldID {
+                snapshot.gameID = newID
+                snapshot.accountID = accountID
+                snapshot.platformRaw = platform.rawValue
+            }
+
+            for activity in activities where activity.gameID == oldID {
+                let newActivityID = "\(newID):\(activity.resolvedDayKey)"
+                if let existing = activitiesByID[newActivityID], existing !== activity {
+                    existing.totalMinutes = max(existing.totalMinutes, activity.totalMinutes)
+                    existing.updatedAt = max(existing.updatedAt, activity.updatedAt)
+                    modelContext.delete(activity)
+                } else {
+                    activitiesByID.removeValue(forKey: activity.activityID)
+                    activity.activityID = newActivityID
+                    activity.gameID = newID
+                    activity.accountID = accountID
+                    activity.titleID = titleID
+                    activity.platformRaw = platform.rawValue
+                    activity.dayKey = activity.resolvedDayKey
+                    activitiesByID[newActivityID] = activity
+                }
+            }
+
+            if let current = recordsByID[newID], current !== legacy {
+                mergeUserAndHistoryData(from: legacy, into: current)
+                modelContext.delete(legacy)
+            } else {
+                recordsByID.removeValue(forKey: oldID)
+                legacy.accountID = accountID
+                legacy.titleID = titleID
+                legacy.applicationID = newID
+                recordsByID[newID] = legacy
+            }
+        }
+        try modelContext.save()
+    }
+
+    private static func mergeUserAndHistoryData(from legacy: GameRecord, into current: GameRecord) {
+        current.totalMinutes = max(current.totalMinutes, legacy.totalMinutes)
+        if current.title.isEmpty { current.title = legacy.title }
+        if current.imageURL.isEmpty { current.imageURL = legacy.imageURL }
+        current.firstPlayedAt = [current.firstPlayedAt, legacy.firstPlayedAt].compactMap { $0 }.min()
+        current.lastPlayedAt = [current.lastPlayedAt, legacy.lastPlayedAt].compactMap { $0 }.max()
+        if legacy.updatedAt > current.updatedAt { current.weeklyMinutes = legacy.weeklyMinutes }
+        current.trophiesEarned = max(current.trophiesEarned, legacy.trophiesEarned)
+        current.trophiesDefined = max(current.trophiesDefined, legacy.trophiesDefined)
+        current.platinumTrophiesEarned = max(current.platinumTrophiesEarned, legacy.platinumTrophiesEarned)
+        current.trophiesSyncedAt = [current.trophiesSyncedAt, legacy.trophiesSyncedAt].compactMap { $0 }.max()
+        current.isFavorite = current.isFavorite || legacy.isFavorite
+        current.isManuallyHidden = current.isManuallyHidden || legacy.isManuallyHidden
+        current.isPinnedVisible = current.isPinnedVisible || legacy.isPinnedVisible
+        if current.personalNote.isEmpty {
+            current.personalNote = legacy.personalNote
+        } else if !legacy.personalNote.isEmpty && current.personalNote != legacy.personalNote {
+            current.personalNote += "\n\(legacy.personalNote)"
+        }
+        if current.playStatus == .played && legacy.playStatus != .played {
+            current.playStatus = legacy.playStatus
+        }
+        current.userEditedAt = max(current.resolvedUserEditedAt, legacy.resolvedUserEditedAt)
+        current.updatedAt = max(current.updatedAt, legacy.updatedAt)
     }
 }

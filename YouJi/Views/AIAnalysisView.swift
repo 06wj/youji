@@ -366,19 +366,25 @@ struct AIAnalysisView: View {
 		let payload = analysisGames
 		isAnalyzing = true
 		analysisError = nil
-		Task {
-			do {
-				let result = try await AIAnalysisClient.shared.analyze(games: payload, apiKey: apiKey, model: model)
-                analysisText = result
-                modelContext.insert(AIProfileResult(
-                    accountScopeKey: accountScopeKey,
+			Task {
+				do {
+					let result = try await AIAnalysisClient.shared.analyze(games: payload, apiKey: apiKey, model: model)
+	                let profile = AIProfileResult(
+	                    accountScopeKey: accountScopeKey,
                     platformFilter: platform.rawValue,
                     minimumHours: minimumHours,
                     text: result,
                     gameCount: payload.count,
-                    totalMinutes: payload.reduce(0) { $0 + $1.totalMinutes }
-                ))
-                try? modelContext.save()
+	                    totalMinutes: payload.reduce(0) { $0 + $1.totalMinutes }
+	                )
+	                modelContext.insert(profile)
+	                do {
+	                    try modelContext.save()
+	                    analysisText = result
+	                } catch {
+	                    modelContext.delete(profile)
+	                    throw error
+	                }
 			} catch is CancellationError {
 				// Leaving the view cancels work without presenting an error.
 			} catch {

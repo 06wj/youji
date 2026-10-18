@@ -160,7 +160,11 @@ struct DashboardView: View {
         if let selectedArchive {
             return AccountScope.token(platform: selectedArchive.platform, accountID: selectedArchive.accountID)
         }
-        return sync.currentAccountScopeKey
+        return AccountScope.visibleScopeKey(
+            for: games,
+            playStationAccountID: sync.currentPlayStationAccountID,
+            nintendoAccountID: sync.currentNintendoAccountID
+        )
     }
     private var visiblePlayStationTrophies: PlayStationTrophySummary? {
         selectedArchive == nil ? sync.playStationTrophies : nil

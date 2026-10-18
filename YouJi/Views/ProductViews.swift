@@ -18,6 +18,7 @@ struct GameDetailView: View {
     let accountScopeKey: String
     let initialSection: GameDetailInitialSection?
     @State private var showingHistoryInfo = false
+    @State private var persistenceError: String?
 
     init(
         game: GameRecord,
@@ -68,8 +69,12 @@ struct GameDetailView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") {
-                        try? modelContext.save()
-                        dismiss()
+                        do {
+                            try modelContext.save()
+                            dismiss()
+                        } catch {
+                            persistenceError = error.localizedDescription
+                        }
                     }
                 }
             }
@@ -77,6 +82,14 @@ struct GameDetailView: View {
                 Button("知道了", role: .cancel) {}
             } message: {
                 Text("同一天只保留最后一次时长记录；图表会放大实际变化范围，每个圆点代表一个有记录的日期。")
+            }
+            .alert("本地保存失败", isPresented: Binding(
+                get: { persistenceError != nil },
+                set: { if !$0 { persistenceError = nil } }
+            )) {
+                Button("知道了", role: .cancel) {}
+            } message: {
+                Text(persistenceError ?? "未知错误")
             }
         }
     }
@@ -108,17 +121,14 @@ struct GameDetailView: View {
     private var personalCard: some View {
         VStack(alignment: .leading, spacing: 15) {
             Text("MY ARCHIVE / 我的档案").eyebrowStyle()
-            Toggle("收藏这款游戏", isOn: $game.isFavorite)
-            Toggle("从游戏库隐藏", isOn: $game.isManuallyHidden)
+            Toggle("收藏这款游戏", isOn: editableGameBinding(\.isFavorite))
+            Toggle("从游戏库隐藏", isOn: editableGameBinding(\.isManuallyHidden))
             if game.totalMinutes < 60,
                let lastPlayedAt = game.lastPlayedAt,
                lastPlayedAt < (Calendar.current.date(byAdding: .month, value: -6, to: .now) ?? .distantPast) {
-                Toggle("即使低时长且较久未玩也始终显示", isOn: $game.isPinnedVisible)
+                Toggle("即使低时长且较久未玩也始终显示", isOn: editableGameBinding(\.isPinnedVisible))
             }
-            Picker("游玩状态", selection: Binding(
-                get: { game.playStatus },
-                set: { game.playStatus = $0 }
-            )) {
+            Picker("游玩状态", selection: editableGameBinding(\.playStatus)) {
                 ForEach(GamePlayStatus.allCases, id: \.self) { status in
                     Text(status.rawValue).tag(status)
                 }
@@ -126,7 +136,7 @@ struct GameDetailView: View {
             .pickerStyle(.menu)
             VStack(alignment: .leading, spacing: 7) {
                 Text("私人备注").font(.caption.bold()).foregroundStyle(YJColor.muted)
-                TextEditor(text: $game.personalNote)
+                TextEditor(text: editableGameBinding(\.personalNote))
                     .frame(minHeight: 90)
                     .padding(8)
                     .scrollContentBackground(.hidden)
@@ -135,6 +145,18 @@ struct GameDetailView: View {
         }
         .padding(17)
         .youjiCard()
+    }
+
+    private func editableGameBinding<Value>(
+        _ keyPath: ReferenceWritableKeyPath<GameRecord, Value>
+    ) -> Binding<Value> {
+        Binding(
+            get: { game[keyPath: keyPath] },
+            set: {
+                game[keyPath: keyPath] = $0
+                game.userEditedAt = .now
+            }
+        )
     }
 
     private var existingPlan: SavedGamePlan? {
@@ -179,12 +201,17 @@ struct GameDetailView: View {
     }
 
     private func addToPlans() {
-        modelContext.insert(SavedGamePlan(
+        let plan = SavedGamePlan(
             accountScopeKey: accountScopeKey,
             title: game.title,
             note: "来自 \(game.platform.rawValue) 游戏档案"
-        ))
-        try? modelContext.save()
+        )
+        modelContext.insert(plan)
+        do { try modelContext.save() }
+        catch {
+            modelContext.rollback()
+            persistenceError = error.localizedDescription
+        }
     }
 
     private var dailySnapshots: [PlaySnapshot] {
@@ -292,14 +319,17 @@ struct GameDetailView: View {
     }
 
     private var dailyCard: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        let recentActivities = activities
+            .sorted { $0.resolvedDayKey > $1.resolvedDayKey }
+            .prefix(30)
+        return VStack(alignment: .leading, spacing: 13) {
             Text("PLAY DAYS / 每日游玩").eyebrowStyle()
-            Chart(Array(activities.prefix(30))) { item in
-                BarMark(x: .value("日期", item.day), y: .value("分钟", item.totalMinutes))
+            Chart(Array(recentActivities)) { item in
+                BarMark(x: .value("日期", item.displayDay), y: .value("分钟", item.totalMinutes))
                     .foregroundStyle(YJColor.coral)
             }
             .frame(height: 150)
-            Text("共 \(Set(activities.map { Calendar.current.startOfDay(for: $0.day) }).count) 个游玩日")
+            Text("共 \(Set(activities.map(\.resolvedDayKey)).count) 个游玩日")
                 .font(.caption).foregroundStyle(YJColor.muted)
         }
         .padding(17)
@@ -1068,6 +1098,7 @@ struct SavedPlansView: View {
     @State private var newTitle = ""
     @State private var newNote = ""
     @State private var showCompleted = false
+    @State private var persistenceError: String?
 
     private var plans: [SavedGamePlan] { allPlans.filter { $0.accountScopeKey == accountScopeKey } }
     private var activePlans: [SavedGamePlan] { plans.filter { !$0.isCompleted } }
@@ -1141,9 +1172,7 @@ struct SavedPlansView: View {
                         ToolbarItem(placement: .topBarLeading) { Button("取消") { showNewPlan = false } }
                         ToolbarItem(placement: .topBarTrailing) {
                             Button("保存") {
-                                modelContext.insert(SavedGamePlan(accountScopeKey: accountScopeKey, title: newTitle.trimmingCharacters(in: .whitespacesAndNewlines), note: newNote))
-                                try? modelContext.save()
-                                newTitle = ""; newNote = ""; showNewPlan = false
+                                saveNewPlan()
                             }
                             .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
@@ -1151,6 +1180,32 @@ struct SavedPlansView: View {
                 }
                 .presentationDetents([.medium])
             }
+            .alert("本地保存失败", isPresented: Binding(
+                get: { persistenceError != nil },
+                set: { if !$0 { persistenceError = nil } }
+            )) {
+                Button("知道了", role: .cancel) {}
+            } message: {
+                Text(persistenceError ?? "未知错误")
+            }
+        }
+    }
+
+    private func saveNewPlan() {
+        let plan = SavedGamePlan(
+            accountScopeKey: accountScopeKey,
+            title: newTitle.trimmingCharacters(in: .whitespacesAndNewlines),
+            note: newNote
+        )
+        modelContext.insert(plan)
+        do {
+            try modelContext.save()
+            newTitle = ""
+            newNote = ""
+            showNewPlan = false
+        } catch {
+            modelContext.rollback()
+            persistenceError = error.localizedDescription
         }
     }
 
@@ -1158,7 +1213,12 @@ struct SavedPlansView: View {
         HStack(alignment: .top, spacing: 12) {
             Button {
                 plan.isCompleted.toggle()
-                try? modelContext.save()
+                plan.updatedAt = .now
+                do { try modelContext.save() }
+                catch {
+                    modelContext.rollback()
+                    persistenceError = error.localizedDescription
+                }
             } label: {
                 Image(systemName: plan.isCompleted ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
@@ -1184,7 +1244,11 @@ struct SavedPlansView: View {
         .swipeActions {
             Button("删除", role: .destructive) {
                 modelContext.delete(plan)
-                try? modelContext.save()
+                do { try modelContext.save() }
+                catch {
+                    modelContext.rollback()
+                    persistenceError = error.localizedDescription
+                }
             }
         }
     }
@@ -1239,7 +1303,14 @@ struct AIProfileHistoryView: View {
                         }
                         .padding(.vertical, 6)
                         .swipeActions {
-                            Button("删除", role: .destructive) { modelContext.delete(profile); try? modelContext.save() }
+                            Button("删除", role: .destructive) {
+                                modelContext.delete(profile)
+                                do { try modelContext.save() }
+                                catch {
+                                    modelContext.rollback()
+                                    shareError = "删除失败：\(error.localizedDescription)"
+                                }
+                            }
                         }
                     }
                 }
@@ -1252,7 +1323,7 @@ struct AIProfileHistoryView: View {
                     SharePreviewView(url: shareURL)
                 }
             }
-            .alert("生成失败", isPresented: Binding(get: { shareError != nil }, set: { if !$0 { shareError = nil } })) {
+            .alert("操作失败", isPresented: Binding(get: { shareError != nil }, set: { if !$0 { shareError = nil } })) {
                 Button("知道了", role: .cancel) {}
             } message: { Text(shareError ?? "") }
         }

@@ -168,11 +168,21 @@ actor PlayStationAPIClient {
             }
             logger.info("Loaded \(allTitles.count) unique PlayStation titles")
 
-            guard !page.titles.isEmpty else { break }
+            if page.titles.isEmpty {
+                if let total = page.totalItemCount, allTitles.count < total {
+                    throw PlayStationSyncError.incompletePagination
+                }
+                break
+            }
             if let total = page.totalItemCount, allTitles.count >= total { break }
             let next = page.nextOffset ?? (offset + page.titles.count)
-            guard next > offset else { break }
+            guard next > offset else {
+                throw PlayStationSyncError.incompletePagination
+            }
             offset = next
+        }
+        guard offset < 5_000 else {
+            throw PlayStationSyncError.incompletePagination
         }
         return allTitles
     }
@@ -405,6 +415,7 @@ enum PlayStationSyncError: LocalizedError {
     case invalidNPSSO
     case authenticationExpired
     case missingAccountIdentity
+    case incompletePagination
     case http(Int, String?)
     case decode(String)
 
@@ -416,6 +427,8 @@ enum PlayStationSyncError: LocalizedError {
             "PlayStation 登录已过期，请重新连接。"
         case .missingAccountIdentity:
             "无法识别 PlayStation 账号，请重新登录后再试。"
+        case .incompletePagination:
+            "PlayStation 游戏列表超过当前可安全读取的范围，本次未标记为完整同步。"
         case .http(401, _):
             "PlayStation 登录已过期，请重新连接。"
         case .http(let code, let message):
