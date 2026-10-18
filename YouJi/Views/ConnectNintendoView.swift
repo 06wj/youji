@@ -12,36 +12,41 @@ struct ConnectNintendoView: View {
 
     var body: some View {
         NavigationStack {
-            connectionIntro
+            Group {
+                if let progress = coordinator.syncProgress, progress.platform == .switchConsole {
+                    ScrollView {
+                        PlatformSyncProgressCard(progress: progress, onBrowse: { dismiss() })
+                            .padding(20)
+                    }
+                } else {
+                    connectionIntro
+                }
+            }
             .background(YJColor.paper)
             .navigationTitle("连接 Switch")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("取消") { dismiss() } } }
-            .alert("连接失败", isPresented: Binding(get: { coordinator.errorMessage != nil }, set: { if !$0 { coordinator.errorMessage = nil } })) {
+            .toolbar { ToolbarItem(placement: .topBarLeading) { Button(coordinator.isSyncing ? "返回游戏库" : "取消") { dismiss() } } }
+            .alert("连接尚未完成", isPresented: Binding(get: { coordinator.errorMessage != nil && coordinator.syncIssue?.platform == .switchConsole }, set: { if !$0 { coordinator.errorMessage = nil } })) {
+                if coordinator.issue(for: .switchConsole)?.recovery == .retry && coordinator.isNintendoConnected {
+                    Button("重试同步") {
+                        Task {
+                            try? await coordinator.syncNintendo(modelContext: modelContext)
+                            if coordinator.errorMessage == nil { dismiss() }
+                        }
+                    }
+                }
                 Button("知道了", role: .cancel) {}
             } message: { Text(coordinator.errorMessage ?? "未知错误") }
-            .overlay {
-                if coordinator.isSyncing {
-                    ProgressView("正在读取游玩记录…")
-                        .padding(24)
-                        .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 18))
-                }
-            }
+            .onAppear { coordinator.errorMessage = nil }
         }
     }
 
     private var connectionIntro: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 30).fill(YJColor.ink).frame(height: 215)
-                    Circle().stroke(YJColor.lime, lineWidth: 14).frame(width: 106, height: 106).offset(x: 96, y: -52)
-                    VStack(alignment: .leading, spacing: 12) {
-                        Image(systemName: "gamecontroller.fill").font(.system(size: 40)).foregroundStyle(YJColor.lime)
-                        Text("把 Switch 的每次冒险，\n带回游迹。")
-                            .font(.system(size: 30, weight: .black, design: .rounded)).foregroundStyle(.white)
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(28)
-                }
+                YJFeatureHeading(eyebrow: "NINTENDO SWITCH / CONNECT", title: "下一次冒险，\n也要好好记住。",
+                                 subtitle: "把 Switch 的每次探索，带回游迹。", artwork: "TwilightCamp", accent: YJColor.nintendo)
+
                 VStack(alignment: .leading, spacing: 15) {
                     Label("在 Nintendo 官方页面完成登录", systemImage: "lock.shield.fill")
                     Label("读取全部游戏总时长与近 7 天明细", systemImage: "clock.arrow.circlepath")
@@ -50,6 +55,7 @@ struct ConnectNintendoView: View {
                 Text("Nintendo Account 需要已关联 Switch 或 Switch 2 的主机用户。")
                     .font(.footnote).foregroundStyle(YJColor.muted).lineSpacing(4)
                 Button {
+                    coordinator.clearIssue(for: .switchConsole)
                     oauth = .make()
                     let currentOAuth = oauth
                     isAuthorizing = true
@@ -68,11 +74,11 @@ struct ConnectNintendoView: View {
                                     if coordinator.errorMessage == nil { dismiss() }
                                 }
                             } catch {
-                                coordinator.errorMessage = error.localizedDescription
+                                coordinator.reportConnectionError(error, platform: .switchConsole)
                             }
                         case .failure(let error):
                             if (error as? ASWebAuthenticationSessionError)?.code != .canceledLogin {
-                                coordinator.errorMessage = error.localizedDescription
+                                coordinator.reportConnectionError(error, platform: .switchConsole)
                             }
                         }
                     }
@@ -84,8 +90,8 @@ struct ConnectNintendoView: View {
                         .frame(maxWidth: .infinity).padding(.vertical, 15)
                     }
                 }
-                .disabled(isAuthorizing)
-                .buttonStyle(.plain).font(.headline).foregroundStyle(.white).background(YJColor.ink, in: Capsule())
+                .disabled(isAuthorizing || coordinator.isSyncing)
+                .buttonStyle(.plain).font(.headline).foregroundStyle(.white).background(Color(red: 0.68, green: 0.12, blue: 0.17), in: RoundedRectangle(cornerRadius: 14))
             }.padding(20)
         }
     }

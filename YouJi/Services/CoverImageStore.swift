@@ -27,8 +27,9 @@ actor CoverImageStore {
         decodedImages.totalCostLimit = 48 * 1_024 * 1_024
     }
 
-    func image(for urlString: String) async throws -> UIImage {
-        let key = cacheKey(for: urlString)
+    func image(for urlString: String, maxPixelSize: Int = 512) async throws -> UIImage {
+        let pixelSize = max(128, min(maxPixelSize, 1536))
+        let key = "\(cacheKey(for: urlString))-\(pixelSize)"
         if let image = decodedImages.object(forKey: key as NSString) {
             return image
         }
@@ -45,7 +46,7 @@ actor CoverImageStore {
                     kCGImageSourceCreateThumbnailFromImageAlways: true,
                     kCGImageSourceCreateThumbnailWithTransform: true,
                     kCGImageSourceShouldCacheImmediately: true,
-                    kCGImageSourceThumbnailMaxPixelSize: 512
+                    kCGImageSourceThumbnailMaxPixelSize: pixelSize
                 ] as CFDictionary
               ) else {
             throw CoverImageError.decodeFailed

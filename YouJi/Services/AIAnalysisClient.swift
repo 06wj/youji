@@ -3,9 +3,7 @@ import CryptoKit
 
 actor AIAnalysisClient {
     static let shared = AIAnalysisClient()
-
     private let session: URLSession
-    private var endpoint: URL { AISettingsStore.endpointURL }
 
     init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -15,150 +13,83 @@ actor AIAnalysisClient {
     }
 
     func analyze(games: [AIAnalysisGame], apiKey: String, model: String) async throws -> String {
-		guard !games.isEmpty else { throw AIAnalysisError.emptyGames }
-        guard !apiKey.isEmpty, !model.isEmpty else { throw AIAnalysisError.missingConfiguration }
-
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(ChatRequest(
-            model: model,
-            messages: [
-                ChatMessage(role: "system", content: AIPrompts.personalitySystem(games: games)),
-                ChatMessage(role: "user", content: AIPrompts.personalityRequest),
-            ],
-            stream: false,
-            temperature: 0.6,
-            maxTokens: 700
-        ))
-
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw AIAnalysisError.invalidResponse }
-        guard 200..<300 ~= http.statusCode else {
-            let apiError = try? JSONDecoder().decode(ChatErrorResponse.self, from: data)
-            throw AIAnalysisError.server(apiError?.error.message ?? "AI 服务返回错误（\(http.statusCode)）")
-        }
-        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
-        guard let content = result.choices.first?.message.content?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !content.isEmpty else {
-            throw AIAnalysisError.invalidResponse
-        }
-        return content
+        guard !games.isEmpty else { throw AIAnalysisError.emptyGames }
+        return try await completion(
+            messages: [ChatMessage(role: "system", content: AIPrompts.personalitySystem(games: games)),
+                       ChatMessage(role: "user", content: AIPrompts.personalityRequest)],
+            apiKey: apiKey, model: model, temperature: 0.6, maxTokens: 700
+        )
     }
 
     func testConnection(apiKey: String, model: String) async throws {
-        guard !apiKey.isEmpty, !model.isEmpty else { throw AIAnalysisError.missingConfiguration }
-        var request = URLRequest(url: endpoint)
+        _ = try await completion(messages: [ChatMessage(role: "user", content: "只回复 OK")],
+                                 apiKey: apiKey, model: model, temperature: 0, maxTokens: 8)
+    }
+
+    func chat(games: [AIAnalysisGame], messages: [AIChatMessage], apiKey: String, model: String) async throws -> String {
+        guard !games.isEmpty else { throw AIAnalysisError.emptyChatGames }
+        guard messages.contains(where: { $0.role == .user }) else { throw AIAnalysisError.emptyMessage }
+        return try await completion(
+            messages: [ChatMessage(role: "system", content: AIPrompts.chatSystem(games: games))]
+                + messages.map { ChatMessage(role: $0.role.rawValue, content: $0.content) },
+            apiKey: apiKey, model: model, temperature: 0.65, maxTokens: 900
+        )
+    }
+
+    func conversationTitle(messages: [AIChatMessage], apiKey: String, model: String) async throws -> String {
+        guard messages.contains(where: { $0.role == .user }) else { throw AIAnalysisError.emptyMessage }
+        let rawTitle = try await completion(
+            messages: [ChatMessage(role: "system", content: AIPrompts.titleSystem),
+                       ChatMessage(role: "user", content: AIPrompts.titleRequest(messages: messages))],
+            apiKey: apiKey, model: model, temperature: 0.3, maxTokens: 30
+        )
+        let title = Self.cleanTitle(rawTitle)
+        guard !title.isEmpty else { throw AIAnalysisError.invalidResponse }
+        return title
+    }
+
+    private func completion(messages: [ChatMessage], apiKey: String, model: String,
+                            temperature: Double, maxTokens: Int) async throws -> String {
+        let url = try AISettingsStore.validate(apiKey: apiKey, modelName: model, endpoint: AISettingsStore.endpointString)
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(apiKey.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(ChatRequest(
-            model: model,
-            messages: [ChatMessage(role: "user", content: "只回复 OK")],
-            stream: false,
-            temperature: 0,
-            maxTokens: 8
+            model: model.trimmingCharacters(in: .whitespacesAndNewlines), messages: messages, stream: false, temperature: temperature, maxTokens: maxTokens
         ))
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw AIAnalysisError.invalidResponse }
-        guard 200..<300 ~= http.statusCode else {
-            let apiError = try? JSONDecoder().decode(ChatErrorResponse.self, from: data)
-            throw AIAnalysisError.server(apiError?.error.message ?? "AI 服务返回错误（\(http.statusCode)）")
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw AIAnalysisError.invalidResponse }
+            guard 200..<300 ~= http.statusCode else {
+                // Never surface provider response bodies: they can contain request
+                // content or credentials. Status-specific guidance is enough to act.
+                throw AIAnalysisError.httpStatus(http.statusCode)
+            }
+            let result: ChatResponse
+            do { result = try JSONDecoder().decode(ChatResponse.self, from: data) }
+            catch { throw AIAnalysisError.invalidResponse }
+            guard let content = result.choices.first?.message.content?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !content.isEmpty else {
+                throw AIAnalysisError.invalidResponse
+            }
+            return content
+        } catch let error as URLError {
+            switch error.code {
+            case .cancelled: throw CancellationError()
+            case .timedOut: throw AIAnalysisError.timedOut
+            case .notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+                throw AIAnalysisError.connectionFailed
+            default: throw AIAnalysisError.connectionFailed
+            }
         }
     }
 
-    func chat(
-        games: [AIAnalysisGame],
-        messages: [AIChatMessage],
-        apiKey: String,
-        model: String
-    ) async throws -> String {
-		guard !games.isEmpty else { throw AIAnalysisError.emptyChatGames }
-        guard messages.contains(where: { $0.role == .user }) else {
-            throw AIAnalysisError.emptyMessage
-        }
-        guard !apiKey.isEmpty, !model.isEmpty else { throw AIAnalysisError.missingConfiguration }
-
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(ChatRequest(
-            model: model,
-            messages: [
-                ChatMessage(role: "system", content: AIPrompts.chatSystem(games: games)),
-            ] + messages.map { ChatMessage(role: $0.role.rawValue, content: $0.content) },
-            stream: false,
-            temperature: 0.65,
-            maxTokens: 900
-        ))
-
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw AIAnalysisError.invalidResponse }
-        guard 200..<300 ~= http.statusCode else {
-            let apiError = try? JSONDecoder().decode(ChatErrorResponse.self, from: data)
-            throw AIAnalysisError.server(apiError?.error.message ?? "AI 服务返回错误（\(http.statusCode)）")
-        }
-        let result = try JSONDecoder().decode(ChatResponse.self, from: data)
-        guard let content = result.choices.first?.message.content?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !content.isEmpty else {
-            throw AIAnalysisError.invalidResponse
-        }
-        return content
+    private static func cleanTitle(_ rawTitle: String) -> String {
+        let firstLine = rawTitle.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        let trimmed = firstLine.trimmingCharacters(in: CharacterSet(charactersIn: " \t#*`\"'“”‘’「」『』。！？"))
+        return String(trimmed.prefix(18))
     }
-
-	func conversationTitle(
-		messages: [AIChatMessage],
-		apiKey: String,
-		model: String
-	) async throws -> String {
-		guard messages.contains(where: { $0.role == .user }) else {
-			throw AIAnalysisError.emptyMessage
-		}
-		guard !apiKey.isEmpty, !model.isEmpty else { throw AIAnalysisError.missingConfiguration }
-
-		var request = URLRequest(url: endpoint)
-		request.httpMethod = "POST"
-		request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-		request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-		request.httpBody = try JSONEncoder().encode(ChatRequest(
-			model: model,
-			messages: [
-				ChatMessage(role: "system", content: AIPrompts.titleSystem),
-				ChatMessage(role: "user", content: AIPrompts.titleRequest(messages: messages)),
-			],
-			stream: false,
-			temperature: 0.3,
-			maxTokens: 30
-		))
-
-		let (data, response) = try await session.data(for: request)
-		guard let http = response as? HTTPURLResponse else { throw AIAnalysisError.invalidResponse }
-		guard 200..<300 ~= http.statusCode else {
-			let apiError = try? JSONDecoder().decode(ChatErrorResponse.self, from: data)
-			throw AIAnalysisError.server(apiError?.error.message ?? "AI 服务返回错误（\(http.statusCode)）")
-		}
-		let result = try JSONDecoder().decode(ChatResponse.self, from: data)
-		guard let rawTitle = result.choices.first?.message.content else {
-			throw AIAnalysisError.invalidResponse
-		}
-		let title = Self.cleanTitle(rawTitle)
-		guard !title.isEmpty else { throw AIAnalysisError.invalidResponse }
-		return title
-	}
-
-	private static func cleanTitle(_ rawTitle: String) -> String {
-		let firstLine = rawTitle
-			.split(whereSeparator: \.isNewline)
-			.first
-			.map(String.init) ?? ""
-		let trimmed = firstLine.trimmingCharacters(in: CharacterSet(charactersIn: " \t#*`\"'“”‘’「」『』。！？"))
-		return String(trimmed.prefix(18))
-	}
-
 }
 
 struct AIAnalysisGame: Codable, Sendable, Equatable {
@@ -242,30 +173,34 @@ private struct ChatChoice: Decodable {
     let message: ChatMessage
 }
 
-private struct ChatErrorResponse: Decodable {
-    let error: ChatErrorBody
-}
-
-private struct ChatErrorBody: Decodable {
-    let message: String
-}
-
 enum AIAnalysisError: LocalizedError {
     case emptyGames
-	case emptyChatGames
+    case emptyChatGames
     case emptyMessage
     case missingConfiguration
     case invalidResponse
-    case server(String)
+    case httpStatus(Int)
+    case timedOut
+    case connectionFailed
 
     var errorDescription: String? {
         switch self {
         case .emptyGames: "当前筛选没有可分析的游戏。"
-		case .emptyChatGames: "还没有游玩超过 1 小时的游戏。"
+        case .emptyChatGames: "还没有游玩超过 1 小时的游戏。"
         case .emptyMessage: "请输入想聊的内容。"
         case .missingConfiguration: "请先在设置中填写 API Key 和模型名称。"
-        case .invalidResponse: "AI 返回的数据无法读取，请稍后重试。"
-        case .server(let message): message
+        case .invalidResponse: "服务返回了无法识别的内容。请确认使用 Chat Completions 兼容接口，或稍后重试。"
+        case .timedOut: "模型响应超时，请稍后重试，或在设置中换用响应更快的模型。已保存的对话不会丢失。"
+        case .connectionFailed: "暂时连接不到 AI 服务。请检查网络和接口地址后重试。"
+        case .httpStatus(let status):
+            switch status {
+            case 401, 403: "AI 服务拒绝了密钥。请在设置中检查 API Key 是否属于该服务，并确认有使用此模型的权限。"
+            case 400, 404, 422: "AI 服务未接受请求。请检查完整接口地址、模型名称及 Chat Completions 兼容性。"
+            case 402: "AI 服务账户的额度不足，请在服务商处检查余额后重试。"
+            case 429: "请求过于频繁或服务额度已用完。请稍后重试，或在服务商处检查额度。"
+            case 500...599: "AI 服务暂时不可用，请稍后重试。"
+            default: "AI 服务返回错误（\(status)），请检查配置或稍后重试。"
+            }
         }
     }
 }

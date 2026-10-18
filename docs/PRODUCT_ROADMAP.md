@@ -49,3 +49,43 @@
   - 构建：更新 README、架构和更新日志；修复所有编译与测试问题。
   - 验收：无生成物污染仓库，既有产品不变量保持成立。
   - 验证：`plutil`、`jq`、`git diff --check`、`xcodebuild build`、`xcodebuild test`。
+
+
+## 2026-10-19 · 产品评审优化
+
+- [x] 状态化首页：首屏连接、紧凑总览、最近游戏、同步新鲜度与分类空态。
+- [x] 同步阶段进度、列表先浏览、分平台直接重连/重试和部分成功说明。
+- [x] Switch 稳定日期窗口，区分未知/零，防止跨日或跨时区重复。
+- [x] 详情快捷操作与待玩全文、编辑、关联游戏、来源对话、显式开始。
+- [x] 人格历史默认恢复、原筛选延续、内容变化提示及人格追问草稿。
+- [x] 短时游玩/重温情境、持久草稿、中断重试和旧快照新开对话。
+- [x] AI 服务预设、高级自定义、校验与保存后回原任务。
+- [x] 本地近七天回顾、旧数据库和备份兼容。
+
+真机账号授权、实际同步耗时和真实服务商连接仍需用真实设备单独验收；模拟器使用拦截网络和内存凭据测试，不代表平台线上验证。
+
+
+## 本轮验收与预览
+
+- 非签名模拟器 Debug 构建通过，iPhone 17 Pro 上 **90 项测试通过、0 失败**（原有 54 项 + 新增 36 项）。
+- 新增回归覆盖稳定自然日/跨时区、未知与零的区分、按账号回顾、PS 列表先保存与部分奖杯失败、待玩完整身份与原子开始、旧 SQLite 升级、备份往返、草稿保全、旧会话迁移和新会话 UI 上下文归属。
+- iPhone SE / iOS 17.2 已走通首页到计划全文、开始游戏、返回来源对话及最新记录创建草稿的交互；没有发送真实模型请求。
+- Info.plist、资源 JSON 与差异空白检查通过。真实平台账号与服务商调用未作为模拟器验收结论。
+
+以下截图为 iPhone 17 Pro / iOS 26.2 的实际运行画面，使用独立内存示例数据。
+
+<p>
+  <img src="screenshots/product/first-run.png" width="32%" alt="首次连接入口">
+  <img src="screenshots/product/overview.png" width="32%" alt="紧凑首页与最近游玩">
+  <img src="screenshots/product/switch.png" width="32%" alt="有真实日期的Switch七日窗口">
+</p>
+<p>
+  <img src="screenshots/product/game-detail-playstation.png" width="32%" alt="详情快捷操作">
+  <img src="screenshots/product/plan-detail.png" width="32%" alt="计划全文与关联游戏">
+  <img src="screenshots/product/weekly-review.png" width="32%" alt="本地七日回顾">
+</p>
+<p>
+  <img src="screenshots/product/ai-analysis.png" width="32%" alt="恢复已有分析与情境入口">
+  <img src="screenshots/product/ai-draft.png" width="32%" alt="可编辑的聊天草稿">
+  <img src="screenshots/product/ai-settings.png" width="32%" alt="服务预设与高级配置">
+</p>

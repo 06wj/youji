@@ -21,6 +21,7 @@ final class GameRecord {
     var firstPlayedAt: Date?
     var lastPlayedAt: Date?
     var weeklyMinutesData: Data
+    var weeklyEndingDayKey: String = ""
     var trophiesEarned: Int = 0
     var trophiesDefined: Int = 0
     var platinumTrophiesEarned: Int = 0
@@ -47,7 +48,8 @@ final class GameRecord {
         trophiesEarned: Int = 0,
         trophiesDefined: Int = 0,
         platinumTrophiesEarned: Int = 0,
-        trophiesSyncedAt: Date? = nil
+        trophiesSyncedAt: Date? = nil,
+        weeklyEndingDayKey: String = ""
     ) {
         self.applicationID = applicationID
         self.accountID = accountID
@@ -59,6 +61,7 @@ final class GameRecord {
         self.firstPlayedAt = firstPlayedAt
         self.lastPlayedAt = lastPlayedAt
         self.weeklyMinutesData = (try? JSONEncoder().encode(weeklyMinutes)) ?? Data()
+        self.weeklyEndingDayKey = weeklyEndingDayKey
         self.trophiesEarned = trophiesEarned
         self.trophiesDefined = trophiesDefined
         self.platinumTrophiesEarned = platinumTrophiesEarned
@@ -375,6 +378,7 @@ struct SyncedGame: Sendable {
     var trophiesDefined: Int = 0
     var platinumTrophiesEarned: Int = 0
     var trophiesSyncedAt: Date?
+    var weeklyEndingDayKey: String? = nil
 }
 
 struct SyncedDailyActivity: Sendable {
@@ -394,6 +398,7 @@ final class AIProfileResult {
     var text: String
     var gameCount: Int
     var totalMinutes: Int
+    var inputFingerprint: String = ""
 
     init(
         id: UUID = UUID(),
@@ -403,7 +408,8 @@ final class AIProfileResult {
         generatedAt: Date = .now,
         text: String,
         gameCount: Int,
-        totalMinutes: Int
+        totalMinutes: Int,
+        inputFingerprint: String = ""
     ) {
         self.id = id
         self.accountScopeKey = accountScopeKey
@@ -413,6 +419,7 @@ final class AIProfileResult {
         self.text = text
         self.gameCount = gameCount
         self.totalMinutes = totalMinutes
+        self.inputFingerprint = inputFingerprint
     }
 }
 
@@ -425,6 +432,8 @@ final class SavedGamePlan {
     var createdAt: Date
     var updatedAt: Date = Date.distantPast
     var isCompleted: Bool
+    var gameID: String = ""
+    var sourceConversationID: String = ""
 
     init(
         id: UUID = UUID(),
@@ -432,7 +441,9 @@ final class SavedGamePlan {
         title: String,
         note: String = "",
         createdAt: Date = .now,
-        isCompleted: Bool = false
+        isCompleted: Bool = false,
+        gameID: String = "",
+        sourceConversationID: String = ""
     ) {
         self.id = id
         self.accountScopeKey = accountScopeKey
@@ -441,6 +452,15 @@ final class SavedGamePlan {
         self.createdAt = createdAt
         self.updatedAt = createdAt
         self.isCompleted = isCompleted
+        self.gameID = gameID
+        self.sourceConversationID = sourceConversationID
+    }
+
+    func linkedGame(in games: [GameRecord]) -> GameRecord? {
+        games.first {
+            $0.applicationID == gameID
+                && AccountScope.contains(accountScopeKey, platform: $0.platform, accountID: $0.accountID)
+        }
     }
 }
 
@@ -454,6 +474,7 @@ struct AIProfileRequest {
     func result(text: String) -> AIProfileResult {
         AIProfileResult(accountScopeKey: accountScopeKey, platformFilter: platformFilter,
                         minimumHours: minimumHours, text: text, gameCount: games.count,
-                        totalMinutes: games.reduce(0) { $0 + $1.totalMinutes })
+                        totalMinutes: games.reduce(0) { $0 + $1.totalMinutes },
+                        inputFingerprint: AIGameContext.fingerprint(games))
     }
 }

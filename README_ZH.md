@@ -20,13 +20,15 @@
 
 ## App 截图
 
+全新「深夜冒险档案」视觉采用原创冒险插画、深色封面收藏墙、可切换列表与沉浸式游戏详情。[查看新版美术与预览](docs/DESIGN.md)。下方为模拟器中的示例游玩数据，用于展示新版界面。
+
 <p align="center">
   <strong>游戏大脑</strong>
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/export.jpg" width="32%" alt="按平台和投入深度生成游戏人格">
-  <img src="docs/screenshots/ai-chat.jpg" width="32%" alt="游戏大脑根据真实经历推荐值得重温的游戏">
+  <img src="docs/screenshots/product/ai-analysis.png" width="32%" alt="按平台和投入深度生成游戏人格">
+  <img src="docs/screenshots/product/ai-chat.png" width="32%" alt="游戏大脑根据真实经历推荐值得重温的游戏">
 </p>
 
 <p align="center">
@@ -34,10 +36,20 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/overview.jpg" width="23%" alt="游迹总览">
-  <img src="docs/screenshots/playstation.jpg" width="23%" alt="PlayStation 游戏与奖杯">
-  <img src="docs/screenshots/switch.jpg" width="23%" alt="Switch 近 7 天游玩">
+  <img src="docs/screenshots/product/overview.png" width="23%" alt="游迹总览">
+  <img src="docs/screenshots/product/playstation.png" width="23%" alt="PlayStation 游戏与奖杯">
+  <img src="docs/screenshots/product/switch.png" width="23%" alt="Switch 近 7 天游玩">
 </p>
+
+## 从打开档案到下一场冒险
+
+- 首次打开可直接选择连接 PS 或 Switch；已有档案时优先展示最近游玩、更新时间和本地近 7 天回顾。
+- 同步展示当前阶段与奖杯进度，已保存的 PS 游戏可先浏览；失败后可直接重连或重试。
+- Switch 图表使用真实日期与稳定的七日窗口，缺少记录不会画成零游玩；跨时区不会把旧数组移到新日期。
+- 游戏封面下即可收藏、改游玩状态、加入待玩；计划支持全文、编辑、关联游戏、开始游玩和回到来源聊天。
+- 游戏大脑恢复最近人格及当时筛选；“今晚只有 30 分钟”、重温和人格追问都先填入可编辑草稿，发送后才联网。
+- 聊天草稿保存在本机，中断后可显式继续生成；旧聊天保持原游戏记录，更新后可另开对话。
+- AI 设置提供现有服务预设与高级自定义，保存后回到原任务；完整备份兼容新增草稿、计划关联和日期信息。
 
 ## 它懂的不是标签，是你的游戏经历
 

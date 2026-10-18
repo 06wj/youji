@@ -1,7 +1,20 @@
 import Foundation
+import CryptoKit
 
 enum AIPrompts {
 	static let chatMinimumMinutes = 60
+
+    static let shortSessionDraft = "今晚只有 30 分钟，请从我已有的游戏中选一款适合轻松玩一会儿的作品，给出一个具体的小目标。不要假定你知道我当前的关卡进度。"
+    static let replayDraft = "从我已有的游戏中选一款值得重温的作品，说明为什么适合我，以及重新开始时可以尝试的一种玩法。"
+
+    static func profileFollowUpDraft(_ profile: String) -> String {
+        "这份游戏人格分析让我想继续聊聊。请结合它，从我已有的游戏中建议下一款值得继续或重温的作品，并说明理由。\n\n我的游戏人格分析：\n\n\(profile)"
+    }
+
+    static func latestRecordDraft(messages: [AIChatMessage]) -> String {
+        messages.last(where: { $0.role == .user })?.content
+            ?? "结合我的最新游戏记录，帮我想想接下来玩什么。"
+    }
 
     static func personalitySystem(games: [AIAnalysisGame]) -> String {
         """
@@ -100,5 +113,67 @@ enum AIPrompts {
 
     private static func format(minutes: Int) -> String {
         minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
+    }
+}
+
+
+/// Builds only the game fields allowed to leave the device. Account identifiers
+/// remain local and are used solely to choose the correct archive.
+@MainActor
+enum AIGameContext {
+    static func snapshot(_ games: [GameRecord]) -> [AIAnalysisGame] {
+        games.filter { $0.totalMinutes > AIPrompts.chatMinimumMinutes }
+            .sorted {
+                if $0.totalMinutes != $1.totalMinutes { return $0.totalMinutes > $1.totalMinutes }
+                return $0.applicationID < $1.applicationID
+            }
+            .map { game in
+                AIAnalysisGame(
+                    platform: game.platform.shortName,
+                    title: game.title,
+                    totalMinutes: game.totalMinutes,
+                    trophyRatio: game.platform == .playStation && game.trophiesDefined > 0
+                        ? trophyText(game) : nil
+                )
+            }
+    }
+
+    private static func trophyText(_ game: GameRecord) -> String {
+        let percent = Int((Double(game.trophiesEarned) / Double(game.trophiesDefined) * 100).rounded())
+        let platinum = game.platinumTrophiesEarned > 0 ? " · 已白金" : ""
+        return "\(game.trophiesEarned)/\(game.trophiesDefined)（\(percent)%）\(platinum)"
+    }
+
+    static func games(in scope: String, from games: [GameRecord]) -> [GameRecord] {
+        games.filter {
+            scope.isEmpty ? $0.accountID.isEmpty
+                : AccountScope.contains(scope, platform: $0.platform, accountID: $0.accountID)
+        }
+    }
+
+    nonisolated static func fingerprint(_ games: [AIAnalysisGame]) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let records = games.map { game in
+            String(decoding: (try? encoder.encode(game)) ?? Data(), as: UTF8.self)
+        }.sorted().joined(separator: "\n")
+        return SHA256.hash(data: Data(records.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func hasChanged(frozen: [AIAnalysisGame], latest: [AIAnalysisGame]) -> Bool {
+        // A play-date-only reordering is not a change to the allowed AI fields.
+        fingerprint(frozen) != fingerprint(latest)
+    }
+}
+
+@MainActor
+enum AIProfileSelection {
+    static func latest(in profiles: [AIProfileResult], accountScope: String,
+                       platform: String? = nil, minimumHours: Int? = nil) -> AIProfileResult? {
+        profiles.filter {
+            $0.accountScopeKey == accountScope
+                && (platform == nil || $0.platformFilter == platform)
+                && (minimumHours == nil || $0.minimumHours == minimumHours)
+        }.max { $0.generatedAt < $1.generatedAt }
     }
 }

@@ -4,7 +4,9 @@ import UIKit
 
 struct AIChatView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @Bindable var conversation: AIConversation
+    @Query private var allGames: [GameRecord]
 
     @State private var archiveRevision = LocalDataRevision.current
     @State private var messages: [AIChatMessage]
@@ -23,11 +25,16 @@ struct AIChatView: View {
     @State private var planTitleDraft = ""
     @State private var planNoteDraft = ""
     @State private var showingConversationInfo = false
+    @State private var showPlans = false
+    @State private var newConversation: AIConversation?
     @FocusState private var composerFocused: Bool
 
-    init(conversation: AIConversation) {
+    init(conversation: AIConversation, initialDraft: String = "") {
         self.conversation = conversation
         _messages = State(initialValue: conversation.messages)
+        _draft = State(initialValue: !conversation.draft.isEmpty ? conversation.draft
+                       : conversation.messages.isEmpty ? initialDraft : "")
+        _canRetry = State(initialValue: conversation.needsReply)
     }
 
     var body: some View {
@@ -40,7 +47,19 @@ struct AIChatView: View {
                 ContentUnavailableView("这段对话暂时无法读取", systemImage: "externaldrive.badge.exclamationmark",
                                        description: Text("原始内容已保留。你可以在设置中导出完整备份，或恢复此前的备份。"))
             } else {
+                contextVersion
                 conversationView
+            }
+            if planSaved {
+                HStack {
+                    Label("已加入待玩", systemImage: "checkmark.circle.fill")
+                    Spacer()
+                    Button("查看清单") { showPlans = true }
+                    Button { planSaved = false } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("收起提示")
+                }
+                .font(.caption.bold()).foregroundStyle(YJColor.lime)
+                .padding(12).background(YJColor.card)
             }
             composer.disabled(conversation.hasUnreadableContent || archiveRevision != LocalDataRevision.current)
         }
@@ -71,6 +90,19 @@ struct AIChatView: View {
             hasAIConfiguration = AISettingsStore.isConfigured
         }) {
             SettingsView(prioritizesAIConfiguration: true)
+        }
+        .sheet(isPresented: $showPlans) {
+            SavedPlansView(accountScopeKey: conversation.accountScopeKey)
+        }
+        .sheet(item: $newConversation) { next in
+            NavigationStack {
+                AIChatView(conversation: next)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("完成") { newConversation = nil }
+                        }
+                    }
+            }
         }
         .sheet(isPresented: $showPlanEditor) {
             NavigationStack {
@@ -107,31 +139,78 @@ struct AIChatView: View {
         } message: {
             Text(errorMessage ?? "未知错误")
         }
+        .task {
+            // A caller may supply a seed draft, but opening a conversation never
+            // submits it. Persist the seed so returning later keeps the task.
+            saveDraft()
+        }
+        .onChange(of: draft) { _, _ in saveDraft() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { saveDraft() }
+        }
         .onDisappear {
             requestTask?.cancel()
             titleTask?.cancel()
+            activeRequestID = nil
+            isSending = false
+            canRetry = messages.last?.role == .user
             guard archiveRevision == LocalDataRevision.current,
                   conversation.modelContext != nil, !conversation.isDeleted,
                   !conversation.hasUnreadableContent else { return }
-            if messages.isEmpty && conversation.canDiscardEmptyConversation {
-                do {
+            do {
+                try persistMessages()
+                if messages.isEmpty && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     try LocalPersistence.transaction(modelContext) { writer in
-                        writer.delete(try LocalPersistence.conversation(conversation.id, in: writer))
+                        let stored = try LocalPersistence.conversation(conversation.id, in: writer)
+                        if stored.canDiscardEmptyConversation { writer.delete(stored) }
                     }
-                } catch { errorMessage = error.localizedDescription }
-            } else {
-                try? persistMessages()
+                }
+            } catch { errorMessage = "草稿未能保存：\(error.localizedDescription)" }
+        }
+    }
+
+    private var latestGames: [AIAnalysisGame] {
+        AIGameContext.snapshot(AIGameContext.games(in: conversation.accountScopeKey, from: allGames))
+    }
+
+    private var contextHasChanged: Bool {
+        AIGameContext.hasChanged(frozen: conversation.games, latest: latestGames)
+    }
+
+    private var contextVersion: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label("游戏记录 · \(conversation.createdAt.formatted(.dateTime.year().month().day())) · \(conversation.games.count) 款", systemImage: "clock.arrow.circlepath")
+                .font(.caption).foregroundStyle(YJColor.muted)
+            if contextHasChanged {
+                if latestGames.isEmpty {
+                    Text("本地已没有符合条件的游戏，仍可围绕这份旧记录聊天。")
+                        .font(.caption2).foregroundStyle(YJColor.muted)
+                } else {
+                    Button(action: startWithLatestRecords) {
+                        Label("记录有变化 · 用最新记录新开对话", systemImage: "square.and.pencil")
+                            .font(.caption.bold())
+                    }
+                    .disabled(isSending || archiveRevision != LocalDataRevision.current)
+                    Text("原对话保留；最近的问题会成为新草稿，点发送后开始。")
+                        .font(.caption2).foregroundStyle(YJColor.muted)
+                }
             }
         }
-        .overlay(alignment: .top) {
-            if planSaved {
-                Text("已保存到待玩与重温清单")
-                    .font(.caption.bold()).foregroundStyle(.white)
-                    .padding(.horizontal, 13).padding(.vertical, 8)
-                    .background(YJColor.ink, in: Capsule())
-                    .padding(.top, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 18).padding(.vertical, 10)
+        .background(YJColor.card.opacity(0.6))
+    }
+
+    private func startWithLatestRecords() {
+        guard !latestGames.isEmpty, !isSending, archiveRevision == LocalDataRevision.current else { return }
+        let seed = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? AIPrompts.latestRecordDraft(messages: messages) : draft
+        do {
+            newConversation = try AIConversationActions.create(
+                accountScope: conversation.accountScopeKey, games: latestGames, draft: seed, in: modelContext
+            )
+        } catch {
+            errorMessage = "新对话未能保存：\(error.localizedDescription)"
         }
     }
 
@@ -175,32 +254,23 @@ struct AIChatView: View {
 
     private var emptyConversation: some View {
         VStack(spacing: 16) {
-            Image(systemName: "brain.head.profile")
-                .font(.system(size: 34, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 66, height: 66)
-                .background(YJColor.purple, in: RoundedRectangle(cornerRadius: 21, style: .continuous))
-            Text("想聊点什么？")
-                .font(.title2.bold())
-            Text("问问你的游戏偏好、游玩方式，或者下一段冒险。")
-                .font(.subheadline)
-                .foregroundStyle(YJColor.muted)
-                .multilineTextAlignment(.center)
+            YJFeatureHeading(eyebrow: "LET’S TALK GAMES", title: "想聊点什么？",
+                             subtitle: "你的偏好、你的玩法、你的下一场冒险。", artwork: "MemoryCrystal")
 
             VStack(spacing: 9) {
+                suggestionButton("今晚只有 30 分钟", draft: AIPrompts.shortSessionDraft)
+                suggestionButton("从已有游戏选一款重温", draft: AIPrompts.replayDraft)
                 suggestionButton("我最偏爱哪类游戏？")
-                suggestionButton("从投入时间看，我是什么类型的玩家？")
-                suggestionButton("哪些游戏最值得我重新玩？")
             }
             .frame(maxWidth: 310)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 56)
+        .padding(.top, 8)
     }
 
-    private func suggestionButton(_ text: String) -> some View {
+    private func suggestionButton(_ text: String, draft suggestedDraft: String? = nil) -> some View {
         Button {
-            draft = text
+            draft = suggestedDraft ?? text
             composerFocused = true
         } label: {
             HStack {
@@ -225,20 +295,21 @@ struct AIChatView: View {
             if message.role == .assistant {
                 Image(systemName: "sparkles")
                     .font(.caption.bold())
-                    .foregroundStyle(.white)
+                    .foregroundStyle(YJColor.purple)
                     .frame(width: 28, height: 28)
-                    .background(YJColor.purple, in: Circle())
+                    .background(YJColor.purple.opacity(0.14), in: Circle())
             }
 
+            VStack(alignment: .leading, spacing: 7) {
             Text(rendered(message.content))
-                .font(.system(size: 15, design: .rounded))
-                .foregroundStyle(message.role == .user ? Color.white : YJColor.ink)
+                .font(.body)
+                .foregroundStyle(message.role == .user ? YJColor.paper : YJColor.ink)
                 .lineSpacing(5)
                 .textSelection(.enabled)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 11)
                 .background(
-                    message.role == .user ? YJColor.ink : YJColor.card,
+                    message.role == .user ? YJColor.lime : YJColor.card,
                     in: RoundedRectangle(cornerRadius: 17, style: .continuous)
                 )
                 .overlay {
@@ -257,6 +328,19 @@ struct AIChatView: View {
                         }
                     }
                 }
+                if message.role == .assistant {
+                    HStack(spacing: 14) {
+                        Button { preparePlan(message) } label: {
+                            Label("加入待玩", systemImage: "bookmark")
+                        }
+                        Button { UIPasteboard.general.string = message.content } label: {
+                            Label("复制", systemImage: "doc.on.doc")
+                        }
+                    }
+                    .font(.caption.bold()).foregroundStyle(YJColor.lime)
+                    .buttonStyle(.plain).padding(.horizontal, 4)
+                }
+            }
 
             if message.role == .assistant { Spacer(minLength: 38) }
         }
@@ -273,7 +357,11 @@ struct AIChatView: View {
                         .font(.caption.bold())
                 }
                 .buttonStyle(.bordered)
-                .tint(YJColor.ink)
+                .tint(YJColor.lime)
+            }
+            if canRetry && !isSending && messages.last?.role == .user {
+                Button("继续生成上一条回复") { retryLastResponse() }
+                    .font(.caption.bold())
             }
             if isSending {
                 Button("停止生成") {
@@ -299,9 +387,9 @@ struct AIChatView: View {
                 Button(action: sendMessage) {
                     Image(systemName: "arrow.up")
                         .font(.headline.bold())
-                        .foregroundStyle(.white)
+                        .foregroundStyle(canSend ? YJColor.paper : YJColor.muted)
                         .frame(width: 44, height: 44)
-                        .background(canSend ? YJColor.ink : YJColor.muted, in: Circle())
+                        .background(canSend ? YJColor.lime : YJColor.elevated, in: Circle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend)
@@ -338,15 +426,10 @@ struct AIChatView: View {
         let userMessage = AIChatMessage(role: .user, content: text)
         let requestMessages = messages + [userMessage]
         messages.append(userMessage)
-        if conversation.titleGeneratedAt == nil,
-           conversation.title == "新对话" {
-            conversation.title = provisionalTitle(from: text)
-        }
         do {
-            try persistMessages()
+            try persistMessages(draftValue: "", provisionalTitle: provisionalTitle(from: text))
         } catch {
             messages.removeLast()
-            conversation.messages = messages
             errorMessage = "消息未能保存：\(error.localizedDescription)"
             return
         }
@@ -359,6 +442,7 @@ struct AIChatView: View {
     }
 
     private func retryLastResponse() {
+        guard hasAIConfiguration else { showSettings = true; return }
         guard !isSending, messages.last?.role == .user, !conversation.hasUnreadableContent,
               archiveRevision == LocalDataRevision.current else { return }
         errorMessage = nil
@@ -395,7 +479,6 @@ struct AIChatView: View {
                     try persistMessages()
                 } catch {
                     messages.removeLast()
-                    conversation.messages = messages
                     throw error
                 }
                 generateTitleIfNeeded(apiKey: apiKey, model: model)
@@ -417,12 +500,18 @@ struct AIChatView: View {
     }
 
     private func savePlanDraft() {
+        guard archiveRevision == LocalDataRevision.current,
+              conversation.modelContext != nil, !conversation.isDeleted else {
+            errorMessage = "档案已更新，请重新打开对话后再保存。"
+            return
+        }
         let title = planTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
         let plan = SavedGamePlan(
             accountScopeKey: conversation.accountScopeKey,
             title: title,
-            note: planNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            note: planNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines),
+            sourceConversationID: conversation.id.uuidString
         )
         do {
             try LocalPersistence.transaction(modelContext) { $0.insert(plan) }
@@ -434,16 +523,34 @@ struct AIChatView: View {
         planTitleDraft = ""
         planNoteDraft = ""
         withAnimation { planSaved = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { withAnimation { planSaved = false } }
     }
 
-    private func persistMessages() throws {
+    private func saveDraft() {
+        guard archiveRevision == LocalDataRevision.current,
+              conversation.modelContext != nil, !conversation.isDeleted,
+              !conversation.hasUnreadableContent else { return }
+        do {
+            try LocalDataRevision.check(archiveRevision)
+            try LocalPersistence.transaction(modelContext) { writer in
+                let stored = try LocalPersistence.conversation(conversation.id, in: writer)
+                stored.updateDraft(draft)
+            }
+        } catch { errorMessage = "草稿未能保存：\(error.localizedDescription)" }
+    }
+
+    private func persistMessages(draftValue: String? = nil, provisionalTitle: String? = nil) throws {
         try LocalDataRevision.check(archiveRevision)
         guard conversation.modelContext != nil, !conversation.isDeleted, !conversation.hasUnreadableContent else {
             throw CancellationError()
         }
         try LocalPersistence.transaction(modelContext) { writer in
-            try LocalPersistence.conversation(conversation.id, in: writer).messages = messages
+            let stored = try LocalPersistence.conversation(conversation.id, in: writer)
+            if stored.messages != messages { stored.messages = messages }
+            stored.updateDraft(draftValue ?? draft)
+            if let provisionalTitle, stored.titleGeneratedAt == nil, stored.title == "新对话" {
+                stored.title = provisionalTitle
+                stored.updatedAt = .now
+            }
         }
     }
 
@@ -500,7 +607,7 @@ struct AIChatView: View {
     }
 
     private func rendered(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text)) ?? AttributedString(text)
+        YJText.markdown(text)
     }
 
     private var chatBackground: some View {

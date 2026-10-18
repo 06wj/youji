@@ -11,19 +11,22 @@ final class AIConversation {
     var messagesData: Data
     var gameContextData: Data
     var accountScopeKey: String = ""
+    var draft: String = ""
 
     init(
         id: UUID = UUID(),
         title: String = "新对话",
         createdAt: Date = .now,
         accountScopeKey: String = "",
-        games: [AIAnalysisGame]
+        games: [AIAnalysisGame],
+        draft: String = ""
     ) {
         self.id = id
         self.title = title
         self.createdAt = createdAt
         self.updatedAt = createdAt
         self.accountScopeKey = accountScopeKey
+        self.draft = draft
         self.messagesData = Self.encode([AIChatMessage]())
         self.gameContextData = Self.encode(games)
     }
@@ -42,6 +45,17 @@ final class AIConversation {
 
     var canDiscardEmptyConversation: Bool {
         !hasUnreadableContent && ((try? readMessages().isEmpty) == true)
+            && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var needsReply: Bool {
+        !hasUnreadableContent && messages.last?.role == .user
+    }
+
+    func updateDraft(_ value: String, editedAt: Date = .now) {
+        guard draft != value else { return }
+        draft = value
+        updatedAt = editedAt
     }
 
     var messages: [AIChatMessage] {
@@ -58,7 +72,10 @@ final class AIConversation {
     }
 
     var preview: String {
-        hasUnreadableContent ? "内容暂时无法读取，原始记录已保留" : (messages.last?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? "开始聊聊你的游戏")
+        if hasUnreadableContent { return "内容暂时无法读取，原始记录已保留" }
+        let savedDraft = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !savedDraft.isEmpty { return "草稿 · \(savedDraft)" }
+        return messages.last?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? "开始聊聊你的游戏"
     }
 
     private static func encode<T: Encodable>(_ value: T) -> Data {

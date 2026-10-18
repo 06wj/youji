@@ -74,7 +74,7 @@ enum LocalPersistence {
         switch source {
         case let source as GameRecord:
             guard let target: GameRecord = context.registeredModel(for: source.persistentModelID) else { return }
-            copy(source, target, [\.applicationID, \.accountID, \.titleID, \.platformRaw, \.title, \.imageURL, \.personalNote, \.playStatusRaw])
+            copy(source, target, [\.applicationID, \.accountID, \.titleID, \.platformRaw, \.title, \.imageURL, \.personalNote, \.playStatusRaw, \.weeklyEndingDayKey])
             copy(source, target, [\.totalMinutes, \.trophiesEarned, \.trophiesDefined, \.platinumTrophiesEarned])
             copy(source, target, [\.firstPlayedAt, \.lastPlayedAt, \.trophiesSyncedAt])
             copy(source, target, [\.updatedAt, \.userEditedAt])
@@ -93,20 +93,20 @@ enum LocalPersistence {
         case let source as AIConversation:
             guard let target: AIConversation = context.registeredModel(for: source.persistentModelID) else { return }
             copy(source, target, [\.id])
-            copy(source, target, [\.title, \.accountScopeKey])
+            copy(source, target, [\.title, \.accountScopeKey, \.draft])
             copy(source, target, [\.createdAt, \.updatedAt])
             copy(source, target, [\.titleGeneratedAt])
             copy(source, target, [\.messagesData, \.gameContextData])
         case let source as AIProfileResult:
             guard let target: AIProfileResult = context.registeredModel(for: source.persistentModelID) else { return }
             copy(source, target, [\.id])
-            copy(source, target, [\.accountScopeKey, \.platformFilter, \.text])
+            copy(source, target, [\.accountScopeKey, \.platformFilter, \.text, \.inputFingerprint])
             copy(source, target, [\.minimumHours, \.gameCount, \.totalMinutes])
             copy(source, target, [\.generatedAt])
         case let source as SavedGamePlan:
             guard let target: SavedGamePlan = context.registeredModel(for: source.persistentModelID) else { return }
             copy(source, target, [\.id])
-            copy(source, target, [\.accountScopeKey, \.title, \.note])
+            copy(source, target, [\.accountScopeKey, \.title, \.note, \.gameID, \.sourceConversationID])
             copy(source, target, [\.createdAt, \.updatedAt])
             copy(source, target, [\.isCompleted])
         default: break

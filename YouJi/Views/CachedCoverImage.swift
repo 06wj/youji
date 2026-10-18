@@ -3,6 +3,7 @@ import UIKit
 
 struct CachedCoverImage: View {
     let urlString: String
+    var maxPixelSize = 512
     @State private var image: UIImage?
 
     var body: some View {
@@ -14,7 +15,7 @@ struct CachedCoverImage: View {
             } else {
                 ZStack {
                     LinearGradient(
-                        colors: [YJColor.purple, YJColor.ink],
+                        colors: [YJColor.elevated, YJColor.paper],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -23,9 +24,9 @@ struct CachedCoverImage: View {
                 }
             }
         }
-        .task(id: urlString) {
+        .task(id: "\(urlString)|\(maxPixelSize)") {
             image = nil
-            image = try? await CoverImageStore.shared.image(for: urlString)
+            image = try? await CoverImageStore.shared.image(for: urlString, maxPixelSize: maxPixelSize)
         }
     }
 }

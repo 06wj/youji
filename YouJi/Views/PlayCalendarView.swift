@@ -28,9 +28,9 @@ struct PlayCalendarSection: View {
                 HStack(spacing: 13) {
                     Image(systemName: "calendar.badge.clock")
                         .font(.title3.bold())
-                        .foregroundStyle(.white)
+                        .foregroundStyle(YJColor.nintendo)
                         .frame(width: 46, height: 46)
-                        .background(YJColor.purple, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .background(YJColor.nintendo.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     VStack(alignment: .leading, spacing: 4) {
                         Text("PLAY DAYS / 游玩日历")
                             .font(.system(size: 9, weight: .black, design: .monospaced))
@@ -114,6 +114,8 @@ struct PlayCalendarView: View {
                     .foregroundStyle(YJColor.muted)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(YJColor.paper)
             .navigationTitle("游玩日历")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

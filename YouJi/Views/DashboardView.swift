@@ -42,7 +42,12 @@ private enum LibraryScope: String, CaseIterable {
 struct DashboardView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \GameRecord.lastPlayedAt, order: .reverse) private var games: [GameRecord]
+    @Query private var dailyActivities: [DailyPlayActivity]
+    @Query private var snapshots: [PlaySnapshot]
     @StateObject private var sync = SyncCoordinator()
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var referenceDate = Date.now
+    @State private var showWeeklyReview = false
     @State private var connectionSheet: ConnectionSheet?
     @State private var showConnectionOptions = false
     @State private var filter: LibraryFilter = .all
@@ -56,7 +61,8 @@ struct DashboardView: View {
     @State private var selectedGame: GameRecord?
     @State private var searchText = ""
     @State private var libraryScope: LibraryScope = .all
-    @State private var syncingPlatform: GamePlatform?
+    @AppStorage("library-cover-layout") private var usesCoverLayout = true
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(initialFilter: LibraryFilter = .all) {
         _filter = State(initialValue: initialFilter)
@@ -136,10 +142,18 @@ struct DashboardView: View {
         return Double(game.trophiesEarned) / Double(game.trophiesDefined)
     }
 
-    private var week: [Int] {
-        switchGames.reduce(Array(repeating: 0, count: 7)) { result, game in
-            zip(result, game.weeklyMinutes).map(+)
-        }
+    private var activityWindow: NintendoActivityWindow {
+        NintendoActivityWindow.make(games: switchGames, activities: dailyActivities, now: referenceDate)
+    }
+    private var weeklyReview: LocalWeeklyReview {
+        LocalWeeklyReview.make(games: currentAccountGames, snapshots: snapshots,
+                               activities: dailyActivities, now: referenceDate)
+    }
+    private var isFirstUse: Bool {
+        games.isEmpty && !sync.isPlayStationConnected && !sync.isNintendoConnected
+    }
+    private var recentGames: [GameRecord] {
+        Array(summaryGames.sorted { ($0.lastPlayedAt ?? .distantPast) > ($1.lastPlayedAt ?? .distantPast) }.prefix(2))
     }
 
     private var playStationGames: [GameRecord] { summaryGames.filter { $0.platform == .playStation } }
@@ -154,7 +168,14 @@ struct DashboardView: View {
         return platformGames.max { ($0.lastPlayedAt ?? .distantPast) < ($1.lastPlayedAt ?? .distantPast) }
     }
     private var switchTopThisWeek: GameRecord? {
-        switchGames.max { $0.weeklyMinutes.reduce(0, +) < $1.weeklyMinutes.reduce(0, +) }
+        let totals = activityWindow.gameMinutes
+        return switchGames.filter { (totals[$0.applicationID] ?? 0) > 0 }
+            .max { (totals[$0.applicationID] ?? 0) < (totals[$1.applicationID] ?? 0) }
+    }
+    private var displayedNintendoAccountID: String {
+        if let selectedArchive { return selectedArchive.platform == .switchConsole ? selectedArchive.accountID : "" }
+        return AccountScope.displayAccountID(for: .switchConsole, currentAccountID: sync.currentNintendoAccountID,
+                                            games: currentAccountGames) ?? ""
     }
     private var activeAccountScopeKey: String {
         if let selectedArchive {
@@ -178,29 +199,32 @@ struct DashboardView: View {
             ScrollView {
                 LazyVStack(spacing: 16) {
                     header
-                    platformPicker
-                    if selectedArchive != nil { archiveBanner }
-                    insightCard
-                    if let receipt = visibleReceipt { syncReceiptCard(receipt) }
-                    if filter == .switchConsole {
-                        PlayCalendarSection(
-                            accountID: selectedArchive?.platform == .switchConsole
-                                ? selectedArchive?.accountID ?? ""
-                                : (selectedArchive == nil ? AccountScope.displayAccountID(
-                                    for: .switchConsole,
-                                    currentAccountID: sync.currentNintendoAccountID,
-                                    games: games
-                                ) ?? "" : ""),
-                            games: currentAccountGames
-                        )
+                    if isFirstUse {
+                        welcomeCard
+                        syncStatus
+                    } else {
+                        platformPicker
+                        if selectedArchive != nil { archiveBanner }
+                        syncStatus
+                        insightCard
+                        if filter == .all, !recentGames.isEmpty {
+                            recentGamesCard
+                            weeklyReviewShortcut
+                        }
+                        if let receipt = visibleReceipt { syncReceiptCard(receipt) }
+                        if filter == .switchConsole, selectedArchive == nil || selectedArchive?.platform == .switchConsole {
+                            PlayCalendarSection(accountID: displayedNintendoAccountID, games: currentAccountGames)
+                        }
+                        if filter == .playStation, visiblePlayStationTrophies != nil { trophyCard }
+                        library
                     }
-                    if filter == .playStation, visiblePlayStationTrophies != nil { trophyCard }
-                    library
                 }
                 .padding(.horizontal, 18)
                 .padding(.bottom, 38)
             }
             .background(appBackground)
+            .foregroundStyle(YJColor.ink)
+            .tint(YJColor.lime)
             .toolbar(.hidden, for: .navigationBar)
             .sheet(item: $connectionSheet) { sheet in
                 switch sheet {
@@ -237,15 +261,23 @@ struct DashboardView: View {
                 Button(sync.isNintendoConnected ? "Switch 已连接" : "连接 Nintendo Switch") { connectionSheet = .switchConsole }
                 Button("取消", role: .cancel) {}
             }
-            .alert("同步失败", isPresented: Binding(
-                get: { sync.errorMessage != nil && connectionSheet == nil },
+            .alert("本地记录未能保存", isPresented: Binding(
+                get: { sync.errorMessage != nil && sync.syncIssue == nil && connectionSheet == nil },
                 set: { if !$0 { sync.errorMessage = nil } }
             )) {
-                Button("账号与同步") { showAccountCenter = true }
-                Button("知道了", role: .cancel) {}
-            } message: {
-                Text(sync.errorMessage ?? "未知错误")
+                Button("重试保存") { sync.backfillNintendoDailyActivities(modelContext: modelContext, force: true) }
+                Button("稍后", role: .cancel) { sync.errorMessage = nil }
+            } message: { Text("已有记录仍保留，请稍后重试。") }
+            .sheet(isPresented: $showWeeklyReview) {
+                WeeklyReviewView(review: weeklyReview, accountScopeKey: activeAccountScopeKey)
             }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { referenceDate = .now }
+            }
+            .onChange(of: sync.isSyncing) { _, isSyncing in
+                if !isSyncing { referenceDate = .now }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in referenceDate = .now }
             .task {
                 sync.backfillNintendoDailyActivities(modelContext: modelContext)
             }
@@ -263,18 +295,20 @@ struct DashboardView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 11) {
+        HStack(spacing: 10) {
             Image("BrandIcon")
                 .resizable().scaledToFill()
-                .frame(width: 42, height: 42)
-                .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 13).stroke(.white.opacity(0.65), lineWidth: 1))
-                .shadow(color: YJColor.purple.opacity(0.18), radius: 10, y: 4)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("游迹").font(.headline.bold())
-                Text("PLAYLOG").font(.system(size: 8, weight: .black, design: .monospaced)).tracking(2).foregroundStyle(YJColor.muted)
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(YJColor.line))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("游迹").font(.title3.bold()).tracking(2)
+                Text("PLAYLOG / 玩家档案")
+                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                    .tracking(1.2).foregroundStyle(YJColor.muted)
             }
-            Spacer()
+            Spacer(minLength: 4)
             platformSyncButton(.playStation)
             platformSyncButton(.switchConsole)
             Menu {
@@ -282,14 +316,14 @@ struct DashboardView: View {
                 Button { showPlans = true } label: { Label("待玩与重温", systemImage: "bookmark") }
                 Button { showSettings = true } label: { Label("设置", systemImage: "gearshape") }
             } label: {
-				Image(systemName: "ellipsis")
-					.font(.caption.bold())
-					.foregroundStyle(YJColor.ink)
-					.frame(width: 36, height: 36)
-					.background(Color.white.opacity(0.72), in: Circle())
-					.overlay(Circle().stroke(Color.white.opacity(0.85)))
-			}
-			.accessibilityLabel("更多功能")
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(YJColor.ink)
+                    .frame(width: 44, height: 44)
+                    .background(YJColor.card, in: Circle())
+                    .overlay(Circle().strokeBorder(YJColor.line))
+            }
+            .accessibilityLabel("更多功能")
         }.padding(.top, 8)
     }
 
@@ -330,8 +364,10 @@ struct DashboardView: View {
             Image(systemName: receipt.trophyFailures > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .foregroundStyle(receipt.trophyFailures > 0 ? YJColor.coral : YJColor.purple)
             VStack(alignment: .leading, spacing: 3) {
-                Text("\(receipt.platform.shortName) 游玩记录已更新").font(.caption.bold())
-                Text(highlights.isEmpty ? "当前记录已是最新" : highlights.joined(separator: " · "))
+                Text("\(receipt.platform.shortName) 上次同步结果").font(.caption.bold())
+                Text(receipt.syncedAt.formatted(.dateTime.month().day().hour().minute()))
+                    .font(.caption2).foregroundStyle(YJColor.muted)
+                Text(highlights.isEmpty ? "上次同步未发现变化" : highlights.joined(separator: " · "))
                     .font(.caption2).foregroundStyle(YJColor.muted)
                 if receipt.trophyFailures > 0 {
                     Text("\(receipt.trophyFailures) 项奖杯数据将在下次同步重试")
@@ -347,70 +383,61 @@ struct DashboardView: View {
 
     private func platformSyncButton(_ platform: GamePlatform) -> some View {
         let connected = platform == .playStation ? sync.isPlayStationConnected : sync.isNintendoConnected
-        let color = platform == .playStation
-            ? Color(red: 0.02, green: 0.28, blue: 0.72)
-            : Color(red: 0.89, green: 0.08, blue: 0.13)
+        let color = YJColor.platform(platform)
         return Button {
-            guard connected else {
-                connectionSheet = platform == .playStation ? .playStation : .switchConsole
-                return
-            }
-            Task {
-                syncingPlatform = platform
-                defer { syncingPlatform = nil }
-                if platform == .playStation {
-                    try? await sync.syncPlayStation(modelContext: modelContext)
-                } else {
-                    try? await sync.syncNintendo(modelContext: modelContext)
-                }
-            }
+            startSyncOrConnect(platform)
         } label: {
             HStack(spacing: 5) {
-                if syncingPlatform == platform {
+                if sync.syncProgress?.platform == platform {
                     ProgressView().tint(.white).controlSize(.mini)
                 } else {
                     Text(platform.shortName)
                         .font(.system(size: 9, weight: .black, design: .monospaced))
                     Image(systemName: connected ? "arrow.triangle.2.circlepath" : "link")
-                        .font(.caption2.bold())
+                        .font(.system(size: 12, weight: .bold))
                 }
             }
-            .foregroundStyle(.white)
-            .frame(width: 45, height: 36)
-            .background(color, in: Capsule())
+            .foregroundStyle(color)
+            .frame(width: 45, height: 44)
+            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(color.opacity(0.2)))
         }
+        .accessibilityLabel("\(connected ? "同步" : "连接") \(platform.rawValue)")
         .disabled(sync.isSyncing)
         .buttonStyle(.plain)
-        .opacity(sync.isSyncing && syncingPlatform != platform ? 0.48 : 1)
+        .opacity(sync.isSyncing && sync.syncProgress?.platform != platform ? 0.48 : 1)
     }
 
     private var platformPicker: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             ForEach(LibraryFilter.allCases, id: \.self) { item in
                 Button {
                     withAnimation(.snappy(duration: 0.24)) {
                         filter = item
-                        if item != .playStation, gameSort.isPlayStationOnly {
-                            gameSort = .playTime
-                        }
+                        if item != .playStation, gameSort.isPlayStationOnly { gameSort = .playTime }
                     }
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: platformIcon(item)).font(.caption.bold())
-                        Text(item.rawValue).font(.subheadline.bold()).lineLimit(1)
+                        Text(dynamicTypeSize.isAccessibilitySize ? (item.platform?.shortName ?? item.rawValue) : item.rawValue)
+                            .font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
                     }
-                    .foregroundStyle(filter == item ? Color.white : YJColor.muted)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
-                    .background(filter == item ? activeTabColor(item) : Color.clear, in: Capsule())
+                    .foregroundStyle(filter == item ? activeTabColor(item) : YJColor.muted)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(filter == item ? activeTabColor(item).opacity(0.11) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(alignment: .bottom) {
+                        if filter == item { Capsule().fill(activeTabColor(item)).frame(width: 22, height: 2) }
+                    }
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(item.rawValue)
+                .accessibilityAddTraits(filter == item ? [.isSelected] : [])
             }
         }
-        .padding(5)
-        .background(Color.white.opacity(0.64), in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.8)))
-        .shadow(color: YJColor.ink.opacity(0.05), radius: 12, y: 5)
+        .padding(4)
+        .background(YJColor.card, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(YJColor.line))
     }
 
     @ViewBuilder
@@ -423,55 +450,173 @@ struct DashboardView: View {
     }
 
     private var overviewInsightCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 12) {
-                heroTitle("ALL GAMES / 总览", value: format(minutes: playStationMinutes + switchMinutes))
-                Spacer(minLength: 4)
-                if !currentAccountGames.isEmpty {
-                    VStack(alignment: .trailing, spacing: 6) {
-                        overviewHeroShortcut("游玩洞察", icon: "chart.line.uptrend.xyaxis") {
-                            showInsights = true
-                        }
-                        overviewHeroShortcut("游戏大脑", icon: "sparkles") {
-                            showAIAnalysis = true
-                        }
-                    }
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("你的游戏档案").font(.caption).foregroundStyle(YJColor.muted)
+                    Text(format(minutes: playStationMinutes + switchMinutes))
+                        .font(.system(.title2, design: .rounded, weight: .bold))
                 }
+                Spacer(minLength: 0)
+                Text("\(summaryGames.count) 款").font(.subheadline.bold()).foregroundStyle(YJColor.lime)
             }
-            HStack(spacing: 10) {
-                platformMetric(
-                    name: "PlayStation",
-                    value: compactHours(playStationMinutes),
-                    detail: "\(playStationGames.count) 款",
-                    color: Color(red: 0.12, green: 0.42, blue: 0.95)
-                )
-                platformMetric(
-                    name: "Switch",
-                    value: compactHours(switchMinutes),
-                    detail: "\(switchGames.count) 款",
-                    color: Color(red: 0.95, green: 0.18, blue: 0.20)
-                )
+            adaptiveHeroLayout {
+                freshnessButton(.playStation)
+                freshnessButton(.switchConsole)
             }
-            if let latestVisibleGame {
-                recentGameLine(latestVisibleGame, eyebrow: "最近游玩")
+            adaptiveHeroLayout {
+                overviewHeroShortcut("洞察", icon: "chart.xyaxis.line") { showInsights = true }
+                overviewHeroShortcut("游戏大脑", icon: "sparkles") { showAIAnalysis = true }
+                overviewHeroShortcut("待玩", icon: "bookmark") { showPlans = true }
             }
         }
-        .heroCard(colors: [YJColor.ink, Color(red: 0.12, green: 0.10, blue: 0.20)])
+        .padding(18)
+        .background(YJArtwork(name: "ArchiveWorld", shade: 0.66))
+        .youjiCard()
     }
 
-    private func overviewHeroShortcut(
-        _ title: String,
-        icon: String,
-        action: @escaping () -> Void
-    ) -> some View {
+    private var welcomeCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("YOUR ADVENTURE STARTS HERE")
+                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                    .tracking(1).foregroundStyle(YJColor.lime)
+                Text("把玩过的世界，\n收进自己的档案。")
+                    .font(.system(.title, design: .rounded, weight: .bold))
+                Text("连接一个平台，就能看到游戏时长、最近活动和属于你的收藏墙。")
+                    .font(.subheadline).foregroundStyle(YJColor.ink.opacity(0.8)).lineSpacing(4)
+            }
+            .frame(maxWidth: .infinity, minHeight: 170, alignment: .leading)
+            .padding(20).background(YJArtwork(name: "ArchiveWorld", shade: 0.3))
+            VStack(spacing: 12) {
+                welcomeConnection(.playStation)
+                welcomeConnection(.switchConsole)
+                Label("记录保存在本机，连接与同步由你决定。", systemImage: "lock.shield")
+                    .font(.caption).foregroundStyle(YJColor.muted)
+            }.padding(.horizontal, 20).padding(.bottom, 20)
+        }.youjiCard()
+    }
+
+    private func welcomeConnection(_ platform: GamePlatform) -> some View {
+        Button { startSyncOrConnect(platform) } label: {
+            Label("连接 \(platform.rawValue)", systemImage: platform == .playStation ? "playstation.logo" : "gamecontroller")
+                .font(.subheadline.bold()).frame(maxWidth: .infinity, minHeight: 50)
+                .foregroundStyle(YJColor.platform(platform))
+                .background(YJColor.platform(platform).opacity(0.14), in: RoundedRectangle(cornerRadius: 14))
+        }.buttonStyle(.plain).disabled(sync.isSyncing)
+    }
+
+    @ViewBuilder
+    private var syncStatus: some View {
+        if let progress = sync.syncProgress {
+            PlatformSyncProgressCard(progress: progress)
+        } else {
+            ForEach(GamePlatform.allCases, id: \.self) { platform in
+                if let issue = sync.issue(for: platform), selectedArchive == nil {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label(issue.isPartialSuccess ? "\(platform.shortName) 记录已保存，部分内容待补全" : "\(platform.shortName) 需要你处理一下",
+                              systemImage: "exclamationmark.circle")
+                            .font(.subheadline.bold()).foregroundStyle(YJColor.coral)
+                        Text(issue.message).font(.caption).foregroundStyle(YJColor.muted)
+                        HStack {
+                            Button(issue.actionTitle) { recover(issue) }.font(.caption.bold())
+                            Spacer(minLength: 0)
+                            Button("稍后") { sync.clearIssue(for: platform) }.font(.caption).foregroundStyle(YJColor.muted)
+                        }
+                    }.padding(16).youjiCard()
+                }
+            }
+        }
+    }
+
+    private func recover(_ issue: PlatformSyncIssue) {
+        if issue.recovery == .reconnect {
+            connectionSheet = issue.platform == .playStation ? .playStation : .switchConsole
+        } else {
+            startSyncOrConnect(issue.platform)
+        }
+    }
+
+    private func startSyncOrConnect(_ platform: GamePlatform) {
+        guard !sync.isSyncing else { return }
+        let connected = platform == .playStation ? sync.isPlayStationConnected : sync.isNintendoConnected
+        guard connected else {
+            connectionSheet = platform == .playStation ? .playStation : .switchConsole
+            return
+        }
+        Task {
+            if platform == .playStation { try? await sync.syncPlayStation(modelContext: modelContext) }
+            else { try? await sync.syncNintendo(modelContext: modelContext) }
+        }
+    }
+
+    private func freshnessDate(_ platform: GamePlatform) -> Date? {
+        let stored = currentAccountGames.filter { $0.platform == platform }.map(\.updatedAt).max()
+        guard selectedArchive == nil else { return stored }
+        return (platform == .playStation ? sync.lastPlayStationSyncAt : sync.lastNintendoSyncAt) ?? stored
+    }
+
+    private func freshnessButton(_ platform: GamePlatform) -> some View {
+        Button { showAccountCenter = true } label: {
+            HStack(alignment: .top, spacing: 6) {
+                Circle().fill(YJColor.platform(platform)).frame(width: 5, height: 5).padding(.top, 4)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(platform.rawValue).font(.caption.bold()).foregroundStyle(YJColor.ink)
+                    if let date = freshnessDate(platform) {
+                        Text("\(selectedArchive == nil && (platform == .playStation ? sync.isPlayStationConnected : sync.isNintendoConnected) ? "更新于" : "本机记录") \(date.formatted(.dateTime.year().month().day().hour().minute()))")
+                            .font(.caption2).foregroundStyle(YJColor.muted)
+                    } else {
+                        Text((platform == .playStation ? sync.isPlayStationConnected : sync.isNintendoConnected) ? "等待首次同步" : "尚未连接")
+                            .font(.caption2).foregroundStyle(YJColor.muted)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+        }.buttonStyle(.plain)
+    }
+
+    private var recentGamesCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("最近游玩").font(.headline)
+            ForEach(recentGames, id: \.applicationID) { game in
+                recentGameLine(game, eyebrow: game.lastPlayedAt?.formatted(.dateTime.month().day()) ?? "已收录")
+            }
+        }.padding(16).youjiCard()
+    }
+
+    private var weeklyReviewShortcut: some View {
+        Button { showWeeklyReview = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "calendar").foregroundStyle(YJColor.lime)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("近 7 天回顾").font(.subheadline.bold()).foregroundStyle(YJColor.ink)
+                    Text(weeklyReview.games.isEmpty ? "回看本机记录，积累每一段冒险" : "\(weeklyReview.games.count) 款游戏 · 已记录 \(format(minutes: weeklyReview.totalMinutes))")
+                        .font(.caption).foregroundStyle(YJColor.muted)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(YJColor.muted)
+            }.padding(16).youjiCard()
+        }.buttonStyle(.plain)
+    }
+
+    private var adaptiveHeroLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
+            : AnyLayout(HStackLayout(spacing: 12))
+    }
+
+    private func overviewHeroShortcut(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Label(title, systemImage: icon)
-                .font(.caption2.bold())
-                .foregroundStyle(.white.opacity(0.9))
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(.white.opacity(0.10), in: Capsule())
-                .overlay(Capsule().stroke(.white.opacity(0.12)))
+            HStack(spacing: 8) {
+                Image(systemName: icon).foregroundStyle(YJColor.lime)
+                Text(title)
+                Spacer(minLength: 0)
+            }
+            .font(.caption.bold())
+            .foregroundStyle(YJColor.ink)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(YJColor.elevated, in: RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
     }
@@ -479,6 +624,7 @@ struct DashboardView: View {
     private var playStationInsightCard: some View {
         VStack(alignment: .leading, spacing: 16) {
             heroTitle("PLAYSTATION / 最近游玩", value: compactHours(playStationMinutes))
+            freshnessButton(.playStation)
             if let latestVisibleGame {
                 recentGameLine(
                     latestVisibleGame,
@@ -488,45 +634,63 @@ struct DashboardView: View {
                 Text("同步 PlayStation 后显示最近游玩的游戏")
                     .font(.caption).foregroundStyle(.white.opacity(0.55))
             }
-            HStack(spacing: 18) {
+            adaptiveHeroLayout {
                 heroMiniStat(value: "\(playStationGames.count)", label: "游戏")
                 heroMiniStat(value: "\(platinumGameCount)", label: "白金")
                 heroMiniStat(value: visiblePlayStationTrophies.map { "\($0.total)" } ?? "—", label: "奖杯")
             }
         }
-        .heroCard(colors: [Color(red: 0.02, green: 0.16, blue: 0.43), Color(red: 0.02, green: 0.34, blue: 0.76)])
+        .padding(22)
+        .background {
+            YJArtwork(name: "ArchiveWorld", shade: 0.55)
+                .overlay(YJColor.playStation.opacity(0.10))
+        }
+        .youjiCard()
     }
 
     private var switchInsightCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                heroTitle("SWITCH / 近 7 天", value: format(minutes: week.reduce(0, +)))
-                Spacer()
-                Text("活跃 \(week.filter { $0 > 0 }.count) 天")
-                    .font(.caption2.bold()).foregroundStyle(.white.opacity(0.72))
+        let window = activityWindow
+        return VStack(alignment: .leading, spacing: 14) {
+            heroTitle("SWITCH / 近 7 天已记录", value: window.hasRecords ? format(minutes: window.totalMinutes) : "等待同步")
+            freshnessButton(.switchConsole)
+            if let first = window.days.first, let last = window.days.last {
+                Text("\(first.day.formatted(.dateTime.month().day())) — \(last.day.formatted(.dateTime.month().day())) · 有游玩记录 \(window.activeDays) 天")
+                    .font(.caption2).foregroundStyle(YJColor.muted)
             }
-
-            Chart(Array(week.enumerated()), id: \.offset) { index, minutes in
-                BarMark(x: .value("日期", rollingDayLabel(index)), y: .value("分钟", max(minutes, 2)))
-                    .foregroundStyle(index == 6 ? Color.white : Color.white.opacity(minutes > 0 ? 0.38 : 0.13))
-                    .cornerRadius(5)
+            HStack(alignment: .bottom, spacing: 8) {
+                ForEach(window.days) { day in
+                    VStack(spacing: 6) {
+                        ZStack(alignment: .bottom) {
+                            Color.clear.frame(height: 65)
+                            if let minutes = day.recordedMinutes {
+                                if minutes > 0 {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(YJColor.nintendo.opacity(day.isPartial ? 0.45 : 0.85))
+                                        .frame(height: max(3, 65 * Double(minutes) / Double(max(window.days.compactMap(\.recordedMinutes).max() ?? 1, 1))))
+                                } else {
+                                    Text("0").font(.caption2).foregroundStyle(YJColor.muted)
+                                }
+                            } else {
+                                Text("—").font(.caption).foregroundStyle(YJColor.muted)
+                            }
+                        }
+                        Text(day.day.formatted(.dateTime.month(.defaultDigits).day()))
+                            .font(.caption2).foregroundStyle(YJColor.muted).lineLimit(1).minimumScaleFactor(0.7)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(day.day.formatted(.dateTime.month().day()))，\(day.recordedMinutes.map { format(minutes: $0) } ?? "缺少记录")\(day.isPartial ? "，部分游戏待同步" : "")")
+                }
             }
-            .chartYScale(domain: 0...max(week.max() ?? 0, 30))
-            .chartYAxis(.hidden)
-            .chartXAxis {
-                AxisMarks { AxisValueLabel().foregroundStyle(.white.opacity(0.55)).font(.caption2) }
+            if window.incompleteDays > 0 {
+                Text("\(window.incompleteDays) 天记录尚不完整；— 表示未记录，不等于没有玩。")
+                    .font(.caption2).foregroundStyle(YJColor.muted)
             }
-            .frame(height: 76)
-
-            if let game = switchTopThisWeek ?? latestVisibleGame {
-                let playedThisWeek = game.weeklyMinutes.reduce(0, +)
-                recentGameLine(
-                    game,
-                    eyebrow: playedThisWeek > 0 ? "本周最常玩 · \(format(minutes: playedThisWeek))" : "最近游玩"
-                )
+            if let game = switchTopThisWeek {
+                recentGameLine(game, eyebrow: "近 7 天最常玩 · \(format(minutes: window.gameMinutes[game.applicationID] ?? 0))")
             }
         }
-        .heroCard(colors: [Color(red: 0.31, green: 0.035, blue: 0.055), Color(red: 0.73, green: 0.055, blue: 0.08)])
+        .padding(20).background(YJArtwork(name: "TwilightCamp", shade: 0.55)).youjiCard()
     }
 
     private func heroTitle(_ title: String, value: String) -> some View {
@@ -541,16 +705,18 @@ struct DashboardView: View {
     }
 
     private func platformMetric(name: String, value: String, detail: String, color: Color) -> some View {
-        HStack(spacing: 9) {
-            RoundedRectangle(cornerRadius: 4).fill(color).frame(width: 5, height: 34)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name).font(.caption2.bold()).foregroundStyle(.white.opacity(0.58))
-                Text("\(value) · \(detail)").font(.caption.bold()).foregroundStyle(.white).lineLimit(1)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Circle().fill(color).frame(width: 5, height: 5)
+                Text(name).font(.caption).foregroundStyle(YJColor.muted)
             }
-            Spacer(minLength: 0)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(value).font(.system(.title3, design: .rounded, weight: .semibold))
+                    .fixedSize(horizontal: true, vertical: false)
+                Text(detail).font(.caption2).foregroundStyle(YJColor.muted)
+            }
         }
-        .padding(10)
-        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func recentGameLine(_ game: GameRecord, eyebrow: String) -> some View {
@@ -598,7 +764,7 @@ struct DashboardView: View {
                         Image(systemName: "trophy.fill")
                             .font(.title2).foregroundStyle(.yellow)
                             .frame(width: 46, height: 46)
-                            .background(YJColor.ink, in: RoundedRectangle(cornerRadius: 14))
+                            .background(YJColor.elevated, in: RoundedRectangle(cornerRadius: 14))
                     }
 
                     VStack(alignment: .leading, spacing: 7) {
@@ -642,15 +808,82 @@ struct DashboardView: View {
 
     private var library: some View {
         let libraryGames = visibleGames
-        let lastGameID = libraryGames.last?.applicationID
 
         return VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("游戏库").font(.headline)
-                Text("\(libraryGames.count)")
-                    .font(.caption.bold())
-                    .foregroundStyle(YJColor.muted)
-                Spacer()
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 10) {
+                    libraryHeading(count: libraryGames.count)
+                    HStack { Spacer(minLength: 0); libraryTools }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    libraryHeading(count: libraryGames.count)
+                    Spacer(minLength: 4)
+                    libraryTools
+                }
+            }
+
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass").foregroundStyle(YJColor.muted)
+                TextField("搜索游戏或私人备注", text: $searchText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain).foregroundStyle(YJColor.muted)
+                        .accessibilityLabel("清除搜索")
+                }
+            }
+            .font(.subheadline)
+            .padding(.horizontal, 14).padding(.vertical, 14)
+            .background(YJColor.card, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(YJColor.line))
+
+            if libraryGames.isEmpty {
+                emptyLibrary
+            } else {
+                if usesCoverLayout && !dynamicTypeSize.isAccessibilitySize {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12, alignment: .top)], spacing: 16) {
+                        ForEach(libraryGames, id: \.applicationID) { game in
+                            Button { selectedGame = game } label: { GameCoverCard(game: game) }
+                                .buttonStyle(.plain)
+                                .accessibilityHint("打开游戏档案")
+                        }
+                    }
+                } else {
+                    LazyVStack(spacing: 10) {
+                        ForEach(libraryGames, id: \.applicationID) { game in
+                            Button { selectedGame = game } label: { GameRow(game: game) }
+                                .buttonStyle(.plain)
+                                .accessibilityHint("打开游戏档案")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func libraryHeading(count: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("COLLECTION").font(.system(size: 9, weight: .medium, design: .monospaced))
+                .tracking(2).foregroundStyle(YJColor.muted)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("我的游戏库").font(.title3.bold())
+                Text("\(count)").font(.caption.bold()).foregroundStyle(YJColor.muted)
+            }
+        }
+        .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: true)
+    }
+
+    private var libraryTools: some View {
+        HStack(spacing: 8) {
+                Button { usesCoverLayout.toggle() } label: {
+                    Image(systemName: usesCoverLayout ? "list.bullet" : "square.grid.2x2")
+                        .font(.subheadline).frame(width: 44, height: 44)
+                        .foregroundStyle(YJColor.muted)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(usesCoverLayout ? "切换列表" : "切换封面墙")
                 Menu {
                     ForEach(LibraryScope.allCases, id: \.self) { scope in
                         Button {
@@ -684,43 +917,13 @@ struct DashboardView: View {
                     Image(systemName: "arrow.up.arrow.down")
                         .font(.caption.bold())
                         .foregroundStyle(YJColor.ink)
-                        .frame(width: 30, height: 30)
+                        .frame(width: 44, height: 44)
                         .background(YJColor.card, in: Circle())
                         .overlay(Circle().stroke(YJColor.line))
                 }
                 .accessibilityLabel("排序：\(gameSort.rawValue)")
-            }
-
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").foregroundStyle(YJColor.muted)
-                TextField("搜索游戏或私人备注", text: $searchText)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                if !searchText.isEmpty {
-                    Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain).foregroundStyle(YJColor.muted)
-                        .accessibilityLabel("清除搜索")
-                }
-            }
-            .padding(.horizontal, 13).padding(.vertical, 10)
-            .background(YJColor.card, in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(YJColor.line))
-
-            if libraryGames.isEmpty {
-                emptyLibrary
-            } else {
-                LazyVStack(spacing: 0) {
-                    ForEach(libraryGames, id: \.applicationID) { game in
-                        Button { selectedGame = game } label: { GameRow(game: game) }
-                            .buttonStyle(.plain)
-                            .accessibilityHint("打开游戏档案")
-                        if game.applicationID != lastGameID { Divider() }
-                    }
-                }
-                .padding(.horizontal, 14)
-                .youjiCard()
-            }
         }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var emptyLibrary: some View {
@@ -732,26 +935,33 @@ struct DashboardView: View {
                 .shadow(color: YJColor.purple.opacity(0.2), radius: 12, y: 6)
             Text(emptyTitle).font(.headline)
             Text(emptyMessage).font(.caption).foregroundStyle(YJColor.muted).multilineTextAlignment(.center)
-            Button(emptyButtonTitle) {
-                if hasLibraryRefinement {
-                    searchText = ""
-                    libraryScope = .all
-                } else if let archive = selectedArchive, filter.platform != archive.platform {
-                    filter = archive.platform == .playStation ? .playStation : .switchConsole
-                } else if let platform = filter.platform {
-                    connectionSheet = platform == .playStation ? .playStation : .switchConsole
-                } else {
-                    showConnectionOptions = true
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(YJColor.ink)
+            Button(emptyButtonTitle, action: resolveEmptyState)
+            .buttonStyle(YJPrimaryButtonStyle())
+            .padding(.horizontal, 24)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 38)
         .youjiCard()
     }
 
+    private var emptyPlatform: GamePlatform? {
+        if let platform = filter.platform { return platform }
+        if sync.isPlayStationConnected { return .playStation }
+        if sync.isNintendoConnected { return .switchConsole }
+        return nil
+    }
+    private var emptyReason: LibraryEmptyReason {
+        let platformGames = currentAccountGames.filter { filter.platform == nil || $0.platform == filter.platform }
+        let connected = emptyPlatform.map { $0 == .playStation ? sync.isPlayStationConnected : sync.isNintendoConnected } ?? false
+        let synced = emptyPlatform.flatMap { $0 == .playStation ? sync.lastPlayStationSyncAt : sync.lastNintendoSyncAt }
+        let hasIssue = emptyPlatform.flatMap { sync.issue(for: $0) } != nil
+        return LibraryEmptyReason.resolve(isConnected: connected, hasSynced: synced != nil,
+                                          recordCount: platformGames.count, visibleCount: platformGames.filter { !$0.shouldHideFromLibrary }.count,
+                                          hasIssue: hasIssue)
+    }
+    private var hasOtherArchives: Bool {
+        currentAccountGames.isEmpty && games.contains { filter.platform == nil || $0.platform == filter.platform }
+    }
     private var emptyTitle: String {
         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "没有找到匹配的游戏" }
         switch libraryScope {
@@ -760,33 +970,56 @@ struct DashboardView: View {
         case .hidden: return "没有已隐藏的游戏"
         case .all: break
         }
-        if let archive = selectedArchive, filter.platform != nil, filter.platform != archive.platform {
-            return "这个档案没有 \(filter.rawValue) 记录"
-        }
-        return switch filter {
-        case .all: "游戏记录还没进来"
-        case .playStation: "PlayStation 记录还没进来"
-        case .switchConsole: "Switch 记录还没进来"
+        if hasOtherArchives { return "本机还有历史档案" }
+        if let archive = selectedArchive, filter.platform != archive.platform { return "这个档案没有该平台的记录" }
+        switch emptyReason {
+        case .disconnected: return "先连接一个游戏平台"
+        case .awaitingSync: return "账号已连接，等待首次同步"
+        case .noRecords: return "同步完成，还没有读到游戏"
+        case .hidden(let count): return "\(count) 款游戏已被隐藏"
+        case .failed: return "这次读取还未完成"
         }
     }
-
     private var emptyMessage: String {
-        if hasLibraryRefinement { return "调整关键词或清除筛选，继续浏览完整游戏库。" }
-        if selectedArchive != nil { return "历史档案只包含原账号所在平台的本地记录。" }
-        return switch filter {
-        case .all: "连接 PlayStation 或 Nintendo Account，统一查看游戏时间。"
-        case .playStation: "登录 PlayStation Network 后同步 PS4 / PS5 游戏总时长。"
-        case .switchConsole: "登录 Nintendo Account 后同步账号中的 Play Activity。"
+        if hasLibraryRefinement { return "调整关键词或清除筛选，继续浏览游戏库。" }
+        if hasOtherArchives { return "选择要查看的账号档案，已有记录仍保留在这台设备。" }
+        if let archive = selectedArchive, filter.platform != archive.platform { return "历史档案只包含原账号所在平台的本地记录。" }
+        switch emptyReason {
+        case .disconnected: return "连接后，游戏时间和最近冒险会收进你的本地档案。"
+        case .awaitingSync: return "点按同步，读取这个账号的游玩记录。"
+        case .noRecords: return "请确认连接的是游玩所用账号；Switch 账号需要关联主机用户。也可以稍后重试。"
+        case .hidden: return "隐藏不会删除记录，你可以查看并恢复展示。"
+        case .failed: return "已有记录仍保留，请根据上方提示重试或重新连接。"
         }
     }
-
     private var emptyButtonTitle: String {
         if hasLibraryRefinement { return "清除搜索与筛选" }
-        if selectedArchive != nil { return "查看档案平台" }
-        return switch filter {
-        case .all: "连接游戏平台"
-        case .playStation: "连接 PlayStation"
-        case .switchConsole: "连接 Switch"
+        if hasOtherArchives { return "选择历史档案" }
+        if let archive = selectedArchive, filter.platform != archive.platform { return "查看档案平台" }
+        switch emptyReason {
+        case .disconnected: return emptyPlatform.map { "连接 \($0.rawValue)" } ?? "连接游戏平台"
+        case .awaitingSync: return "立即同步"
+        case .noRecords: return "检查账号与同步"
+        case .hidden: return "查看已隐藏游戏"
+        case .failed: return emptyPlatform.flatMap { sync.issue(for: $0)?.actionTitle } ?? "重试同步"
+        }
+    }
+    private func resolveEmptyState() {
+        if hasLibraryRefinement { searchText = ""; libraryScope = .all; return }
+        if hasOtherArchives { showAccountCenter = true; return }
+        if let archive = selectedArchive, filter.platform != archive.platform {
+            filter = archive.platform == .playStation ? .playStation : .switchConsole
+            return
+        }
+        switch emptyReason {
+        case .hidden: libraryScope = .hidden
+        case .noRecords: showAccountCenter = true
+        case .failed:
+            if let platform = emptyPlatform, let issue = sync.issue(for: platform) { recover(issue) }
+            else { showAccountCenter = true }
+        case .disconnected, .awaitingSync:
+            if let platform = emptyPlatform { startSyncOrConnect(platform) }
+            else { showConnectionOptions = true }
         }
     }
 
@@ -798,28 +1031,7 @@ struct DashboardView: View {
         minutes < 60 ? "\(minutes)m" : "\(minutes / 60)h"
     }
 
-    private func rollingDayLabel(_ index: Int) -> String {
-        if index == 6 { return "今" }
-        guard let date = Calendar.current.date(byAdding: .day, value: index - 6, to: .now) else { return "—" }
-        let weekday = Calendar.current.component(.weekday, from: date)
-        return ["日", "一", "二", "三", "四", "五", "六"][weekday - 1]
-    }
-
-    private var appBackground: some View {
-        ZStack {
-            YJColor.paper
-            Circle()
-                .fill(YJColor.lime.opacity(0.10))
-                .frame(width: 280, height: 280)
-                .blur(radius: 12)
-                .offset(x: 160, y: -310)
-            Circle()
-                .fill(YJColor.purple.opacity(0.08))
-                .frame(width: 340, height: 340)
-                .blur(radius: 18)
-                .offset(x: -180, y: 420)
-        }.ignoresSafeArea()
-    }
+    private var appBackground: some View { YJBackground() }
 
     private func platformIcon(_ item: LibraryFilter) -> String {
         switch item {
@@ -831,88 +1043,113 @@ struct DashboardView: View {
 
     private func activeTabColor(_ item: LibraryFilter) -> Color {
         switch item {
-        case .all: YJColor.ink
-        case .playStation: Color(red: 0.02, green: 0.28, blue: 0.72)
-        case .switchConsole: Color(red: 0.89, green: 0.08, blue: 0.13)
+        case .all: YJColor.lime
+        case .playStation: YJColor.playStation
+        case .switchConsole: YJColor.nintendo
         }
     }
 
+}
+
+private struct GameCoverCard: View {
+    let game: GameRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Color.clear
+                .aspectRatio(1.08, contentMode: .fit)
+                .overlay { CachedCoverImage(urlString: game.imageURL) }
+                .clipped()
+                .overlay(alignment: .bottom) {
+                    LinearGradient(colors: [.clear, .black.opacity(0.5)], startPoint: .center, endPoint: .bottom)
+                }
+                .overlay(alignment: .topLeading) {
+                    PlatformBadge(platform: game.platform)
+                        .background(.black.opacity(0.8), in: RoundedRectangle(cornerRadius: 6))
+                        .padding(10)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if game.platform == .playStation, game.platinumTrophiesEarned > 0 {
+                        PlatinumBadge().padding(8)
+                    } else if game.isFavorite {
+                        Image(systemName: "heart.fill").foregroundStyle(YJColor.coral).padding(10)
+                    }
+                }
+            VStack(alignment: .leading, spacing: 9) {
+                Text(game.title).font(.subheadline.weight(.semibold))
+                    .foregroundStyle(YJColor.ink).lineLimit(2, reservesSpace: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text("\(game.totalMinutes < 60 ? game.totalMinutes : game.totalMinutes / 60)")
+                        .font(.system(.title2, design: .rounded, weight: .bold))
+                        .foregroundStyle(YJColor.ink)
+                    Text(game.totalMinutes < 60 ? "分钟" : "小时").font(.caption2).foregroundStyle(YJColor.muted)
+                    Spacer(minLength: 0)
+                    if game.playStatus != .played {
+                        Text(game.playStatus.rawValue).font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(YJColor.lime)
+                    }
+                }
+                if game.platform == .playStation, game.trophiesDefined > 0 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "trophy").foregroundStyle(YJColor.playStation)
+                        Text("\(game.trophiesEarned) / \(game.trophiesDefined)")
+                        Spacer(minLength: 0)
+                        Text("\(Int((Double(game.trophiesEarned) / Double(game.trophiesDefined) * 100).rounded()))%")
+                    }
+                    .font(.caption2).foregroundStyle(YJColor.muted)
+                    ProgressView(value: min(Double(game.trophiesEarned) / Double(game.trophiesDefined), 1))
+                        .tint(game.platinumTrophiesEarned > 0 ? YJColor.lime : YJColor.playStation)
+                } else {
+                    Text(game.lastPlayedAt?.formatted(.relative(presentation: .named)) ?? "已收录")
+                        .font(.caption2).foregroundStyle(YJColor.muted)
+                        .padding(.bottom, 13)
+                }
+            }
+            .padding(12)
+        }
+        .youjiCard()
+        .accessibilityElement(children: .combine)
+    }
 }
 
 private struct GameRow: View {
     let game: GameRecord
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .top, spacing: 14) {
             CachedCoverImage(urlString: game.imageURL)
-            .frame(width: 76, height: 76)
-            .clipShape(RoundedRectangle(cornerRadius: 13))
-
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 7) {
-                    Text(game.platform.shortName)
-                        .font(.system(size: 8, weight: .black, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6).padding(.vertical, 3)
-                        .background(game.platform == .playStation ? Color.blue : Color.red, in: Capsule())
-                    Text(game.title).font(.subheadline.bold()).lineLimit(1)
-                    if game.isFavorite {
-                        Image(systemName: "heart.fill").font(.caption2).foregroundStyle(YJColor.coral)
+                .frame(width: 80, height: 100)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    PlatformBadge(platform: game.platform)
+                    if game.isFavorite { Image(systemName: "heart.fill").font(.caption2).foregroundStyle(YJColor.coral) }
+                    Spacer(minLength: 0)
+                    if game.platform == .playStation, game.platinumTrophiesEarned > 0 { PlatinumBadge() }
+                }
+                Text(game.title).font(.subheadline.bold()).foregroundStyle(YJColor.ink).fixedSize(horizontal: false, vertical: true)
+                Text("\(game.totalMinutes / 60)h \(game.totalMinutes % 60)m")
+                    .font(.system(.title3, design: .rounded, weight: .semibold)).foregroundStyle(YJColor.ink)
+                if game.platform == .playStation, game.trophiesDefined > 0 {
+                    HStack(spacing: 5) {
+                        Image(systemName: "trophy").foregroundStyle(YJColor.playStation)
+                        Text("\(game.trophiesEarned) / \(game.trophiesDefined)")
+                        ProgressView(value: min(Double(game.trophiesEarned) / Double(game.trophiesDefined), 1))
+                            .tint(YJColor.playStation)
                     }
+                    .font(.caption2).foregroundStyle(YJColor.muted)
                 }
                 HStack {
-                    Text("\(game.totalMinutes / 60)h \(game.totalMinutes % 60)m").font(.title3.bold())
-                    Spacer()
-                    Text(game.lastPlayedAt?.formatted(.relative(presentation: .named)) ?? "—")
-                        .font(.caption2).foregroundStyle(YJColor.muted)
+                    Text(game.lastPlayedAt?.formatted(.relative(presentation: .named)) ?? "已收录")
+                    if game.playStatus != .played { Text(game.playStatus.rawValue).foregroundStyle(YJColor.lime) }
                 }
-                if game.platform == .playStation, game.trophiesDefined > 0 {
-                    VStack(spacing: 6) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "trophy.fill").foregroundStyle(.yellow)
-                            Text("奖杯 \(game.trophiesEarned)/\(game.trophiesDefined)")
-                            Spacer()
-                            if game.platinumTrophiesEarned > 0 {
-                                Text("已白金")
-                                    .font(.system(size: 8, weight: .black))
-                                    .foregroundStyle(YJColor.ink)
-                                    .padding(.horizontal, 6).padding(.vertical, 3)
-                                    .background(
-                                        LinearGradient(
-                                            colors: [Color.white, Color(red: 0.62, green: 0.85, blue: 0.98)],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        ),
-                                        in: Capsule()
-                                    )
-                                    .overlay(Capsule().stroke(Color.white.opacity(0.9)))
-                            }
-                            Text("\(Int((Double(game.trophiesEarned) / Double(game.trophiesDefined) * 100).rounded()))%")
-                        }
-                        .font(.caption2.bold()).foregroundStyle(YJColor.muted)
-
-                        GeometryReader { proxy in
-                            ZStack(alignment: .leading) {
-                                Capsule().fill(YJColor.line)
-                                Capsule().fill(YJColor.purple)
-                                    .frame(width: proxy.size.width * rowProgress)
-                            }
-                        }.frame(height: 4)
-                    }
-                }
-                if game.playStatus != .played {
-                    Text(game.playStatus.rawValue)
-                        .font(.caption2.bold())
-                        .foregroundStyle(YJColor.purple)
-                }
+                .font(.caption2).foregroundStyle(YJColor.muted)
             }
-        }.padding(.vertical, 13)
-    }
-
-    private var rowProgress: CGFloat {
-        if game.platform == .playStation, game.trophiesDefined > 0 {
-            return min(CGFloat(game.trophiesEarned) / CGFloat(game.trophiesDefined), 1)
         }
-        return min(CGFloat(game.weeklyMinutes.reduce(0, +)) / 600, 1)
+        .padding(14)
+        .youjiCard()
+        .accessibilityElement(children: .combine)
     }
 }

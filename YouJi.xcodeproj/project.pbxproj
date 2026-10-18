@@ -36,6 +36,11 @@
 		A1000000000000000000001E /* Views/ScreenshotRouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001E /* Views/ScreenshotRouteView.swift */; };
 		A1000000000000000000001F /* Services/LocalDataSafety.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001F /* Services/LocalDataSafety.swift */; };
 		A20000000000000000000001 /* YouJiDataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* YouJiDataTests.swift */; };
+		52FDDC156A84CD253044277D /* LibraryExperience.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65D5791215BDBEBCF8682057 /* Services/LibraryExperience.swift */; };
+		94EE4E75734110B3D9EEF588 /* LibraryExperienceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79649A974DECFDE9CB8C971D /* LibraryExperienceTests.swift */; };
+		68FFECB9B06BBCDF913E1504 /* SyncExperienceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBA6142FF6B17CF4C6644331 /* SyncExperienceTests.swift */; };
+		E0F4632177228CA4AC365913 /* AIProductExperienceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3696B96D200E4B7A1AD77F /* AIProductExperienceTests.swift */; };
+		1FCBB763BC6359BA40BAC5F6 /* SavedPlanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D010D87DC8E27AA3C563789 /* SavedPlanTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -81,6 +86,11 @@
 		B1000000000000000000001F /* Services/LocalDataSafety.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LocalDataSafety.swift; sourceTree = "<group>"; };
 		B20000000000000000000001 /* YouJiDataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouJiDataTests.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* YouJiTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YouJiTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		65D5791215BDBEBCF8682057 /* Services/LibraryExperience.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LibraryExperience.swift; sourceTree = "<group>"; };
+		79649A974DECFDE9CB8C971D /* LibraryExperienceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryExperienceTests.swift; sourceTree = "<group>"; };
+		FBA6142FF6B17CF4C6644331 /* SyncExperienceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncExperienceTests.swift; sourceTree = "<group>"; };
+		EF3696B96D200E4B7A1AD77F /* AIProductExperienceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIProductExperienceTests.swift; sourceTree = "<group>"; };
+		1D010D87DC8E27AA3C563789 /* SavedPlanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedPlanTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -113,6 +123,7 @@
 		D10000000000000000000002 /* YouJi */ = {
 			isa = PBXGroup;
 			children = (
+				65D5791215BDBEBCF8682057 /* Services/LibraryExperience.swift */,
 				B10000000000000000000001 /* YouJiApp.swift */,
 				B10000000000000000000002 /* Models/GameRecord.swift */,
 				B10000000000000000000003 /* Design/Theme.swift */,
@@ -158,6 +169,10 @@
 		D20000000000000000000001 /* YouJiTests */ = {
 			isa = PBXGroup;
 			children = (
+				1D010D87DC8E27AA3C563789 /* SavedPlanTests.swift */,
+				EF3696B96D200E4B7A1AD77F /* AIProductExperienceTests.swift */,
+				FBA6142FF6B17CF4C6644331 /* SyncExperienceTests.swift */,
+				79649A974DECFDE9CB8C971D /* LibraryExperienceTests.swift */,
 				B20000000000000000000001 /* YouJiDataTests.swift */,
 			);
 			path = YouJiTests;
@@ -264,6 +279,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				52FDDC156A84CD253044277D /* LibraryExperience.swift in Sources */,
 				A10000000000000000000001 /* YouJiApp.swift in Sources */,
 				A10000000000000000000002 /* Models/GameRecord.swift in Sources */,
 				A10000000000000000000003 /* Design/Theme.swift in Sources */,
@@ -297,6 +313,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1FCBB763BC6359BA40BAC5F6 /* SavedPlanTests.swift in Sources */,
+				E0F4632177228CA4AC365913 /* AIProductExperienceTests.swift in Sources */,
+				68FFECB9B06BBCDF913E1504 /* SyncExperienceTests.swift in Sources */,
+				94EE4E75734110B3D9EEF588 /* LibraryExperienceTests.swift in Sources */,
 				A20000000000000000000001 /* YouJiDataTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

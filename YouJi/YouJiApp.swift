@@ -8,12 +8,25 @@ struct YouJiApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if let container = database.container {
-                appContent.modelContainer(container)
+            #if DEBUG
+            if DesignPreviewData.isEnabled {
+                DesignPreviewRoot().preferredColorScheme(.dark).tint(YJColor.lime)
             } else {
-                DatabaseRecoveryView(database: database)
-                    .preferredColorScheme(.light)
+                persistentContent
             }
+            #else
+            persistentContent
+            #endif
+        }
+    }
+
+    @ViewBuilder
+    private var persistentContent: some View {
+        if let container = database.container {
+            appContent.modelContainer(container).tint(YJColor.lime)
+        } else {
+            DatabaseRecoveryView(database: database)
+                .preferredColorScheme(.dark).tint(YJColor.lime)
         }
     }
 
@@ -21,12 +34,12 @@ struct YouJiApp: App {
     private var appContent: some View {
         #if DEBUG
         if let screenshotRoute = ScreenshotRoute.launchRoute {
-            ScreenshotRouteView(route: screenshotRoute).preferredColorScheme(.light)
+            ScreenshotRouteView(route: screenshotRoute).preferredColorScheme(.dark)
         } else {
-            DashboardView().preferredColorScheme(.light)
+            DashboardView().preferredColorScheme(.dark)
         }
         #else
-        DashboardView().preferredColorScheme(.light)
+        DashboardView().preferredColorScheme(.dark)
         #endif
     }
 }

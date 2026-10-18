@@ -36,6 +36,7 @@ struct BackupGame: Codable {
     let isPinnedVisible: Bool
     let personalNote: String
     let playStatus: GamePlayStatus
+    var weeklyEndingDayKey: String? = nil
 }
 
 struct BackupSnapshot: Codable {
@@ -71,6 +72,7 @@ struct BackupConversation: Codable {
     let games: [AIAnalysisGame]
     var rawMessagesData: Data? = nil
     var rawGameContextData: Data? = nil
+    var draft: String? = nil
 }
 
 struct BackupProfile: Codable {
@@ -82,6 +84,7 @@ struct BackupProfile: Codable {
     let text: String
     let gameCount: Int
     let totalMinutes: Int
+    var inputFingerprint: String? = nil
 }
 
 struct BackupPlan: Codable {
@@ -92,6 +95,8 @@ struct BackupPlan: Codable {
     let createdAt: Date
     let updatedAt: Date?
     let isCompleted: Bool
+    var gameID: String? = nil
+    var sourceConversationID: String? = nil
 }
 
 struct ProductRestoreSummary: Equatable {
@@ -102,6 +107,59 @@ struct ProductRestoreSummary: Equatable {
 
 @MainActor
 enum ProductDataService {
+    static func updateGame<Value>(
+        _ gameID: String,
+        field: ReferenceWritableKeyPath<GameRecord, Value>,
+        value: Value,
+        modelContext: ModelContext
+    ) throws {
+        try LocalPersistence.transaction(modelContext) { writer in
+            guard let game = try writer.fetch(FetchDescriptor<GameRecord>(predicate: #Predicate { $0.applicationID == gameID })).first else {
+                throw ProductDataError.invalidEdit("这款游戏已不在本地档案中")
+            }
+            game[keyPath: field] = value
+            game.userEditedAt = .now
+        }
+    }
+
+    static func updatePlan(
+        _ id: UUID, accountScopeKey: String, title: String, note: String, gameID: String,
+        modelContext: ModelContext
+    ) throws {
+        try LocalPersistence.transaction(modelContext) { writer in
+            guard let plan = try writer.fetch(FetchDescriptor<SavedGamePlan>(predicate: #Predicate { $0.id == id })).first,
+                  plan.accountScopeKey == accountScopeKey else { throw CancellationError() }
+            let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanTitle.isEmpty else { throw ProductDataError.invalidEdit("请填写计划标题") }
+            if !gameID.isEmpty, gameID != plan.gameID {
+                let games = try writer.fetch(FetchDescriptor<GameRecord>(predicate: #Predicate { $0.applicationID == gameID }))
+                guard let game = games.first,
+                      AccountScope.contains(accountScopeKey, platform: game.platform, accountID: game.accountID) else {
+                    throw ProductDataError.invalidEdit("只能关联当前账号档案中的游戏")
+                }
+            }
+            plan.title = cleanTitle
+            plan.note = note
+            plan.gameID = gameID
+            plan.updatedAt = .now
+        }
+    }
+
+    static func startPlan(_ id: UUID, accountScopeKey: String, modelContext: ModelContext) throws {
+        try LocalPersistence.transaction(modelContext) { writer in
+            guard let plan = try writer.fetch(FetchDescriptor<SavedGamePlan>(predicate: #Predicate { $0.id == id })).first,
+                  plan.accountScopeKey == accountScopeKey else { throw CancellationError() }
+            let games = try writer.fetch(FetchDescriptor<GameRecord>())
+            guard let game = plan.linkedGame(in: games) else {
+                throw ProductDataError.invalidEdit("关联游戏已不在当前账号档案中，请重新选择")
+            }
+            game.playStatus = .playing
+            game.userEditedAt = .now
+            plan.isCompleted = true
+            plan.updatedAt = .now
+        }
+    }
+
     static func makeBackup(modelContext: ModelContext) throws -> YouJiBackup {
         let games = try modelContext.fetch(FetchDescriptor<GameRecord>()).map {
             BackupGame(
@@ -125,7 +183,8 @@ enum ProductDataService {
                 isManuallyHidden: $0.isManuallyHidden,
                 isPinnedVisible: $0.isPinnedVisible,
                 personalNote: $0.personalNote,
-                playStatus: $0.playStatus
+                playStatus: $0.playStatus,
+                weeklyEndingDayKey: $0.weeklyEndingDayKey
             )
         }
         let snapshots = try modelContext.fetch(FetchDescriptor<PlaySnapshot>()).map {
@@ -163,7 +222,8 @@ enum ProductDataService {
                 messages: $0.messages,
                 games: $0.games,
                 rawMessagesData: (try? $0.readMessages()) == nil ? $0.messagesData : nil,
-                rawGameContextData: (try? $0.readGames()) == nil ? $0.gameContextData : nil
+                rawGameContextData: (try? $0.readGames()) == nil ? $0.gameContextData : nil,
+                draft: $0.draft
             )
         }
         let profiles = try modelContext.fetch(FetchDescriptor<AIProfileResult>()).map {
@@ -175,7 +235,8 @@ enum ProductDataService {
                 generatedAt: $0.generatedAt,
                 text: $0.text,
                 gameCount: $0.gameCount,
-                totalMinutes: $0.totalMinutes
+                totalMinutes: $0.totalMinutes,
+                inputFingerprint: $0.inputFingerprint
             )
         }
         let plans = try modelContext.fetch(FetchDescriptor<SavedGamePlan>()).map {
@@ -186,7 +247,9 @@ enum ProductDataService {
                 note: $0.note,
                 createdAt: $0.createdAt,
                 updatedAt: $0.updatedAt,
-                isCompleted: $0.isCompleted
+                isCompleted: $0.isCompleted,
+                gameID: $0.gameID,
+                sourceConversationID: $0.sourceConversationID
             )
         }
         return YouJiBackup(
@@ -248,6 +311,7 @@ enum ProductDataService {
                     game.firstPlayedAt = item.firstPlayedAt
                     game.lastPlayedAt = item.lastPlayedAt
                     game.weeklyMinutes = item.weeklyMinutes
+                    game.weeklyEndingDayKey = item.weeklyEndingDayKey ?? ""
                     game.trophiesEarned = item.trophiesEarned
                     game.trophiesDefined = item.trophiesDefined
                     game.platinumTrophiesEarned = item.platinumTrophiesEarned
@@ -318,6 +382,7 @@ enum ProductDataService {
                 let imported = AIConversation(id: item.id, title: item.title, createdAt: item.createdAt,
                                               accountScopeKey: item.accountScopeKey, games: item.games)
                 imported.messages = item.messages
+                imported.draft = item.draft ?? ""
                 if let raw = item.rawMessagesData { imported.messagesData = raw }
                 if let raw = item.rawGameContextData { imported.gameContextData = raw }
                 imported.updatedAt = item.updatedAt
@@ -344,6 +409,11 @@ enum ProductDataService {
                     local.titleGeneratedAt = item.titleGeneratedAt
                     local.accountScopeKey = item.accountScopeKey
                 }
+                // A draft is independent of message decoding. Missing means an
+                // older format; never erase newer text or move it across scopes.
+                if isNewer, local.accountScopeKey == item.accountScopeKey, let draft = item.draft {
+                    local.draft = draft
+                }
                 local.updatedAt = max(oldDate, item.updatedAt)
             }
 
@@ -366,6 +436,7 @@ enum ProductDataService {
                 profile.text = item.text
                 profile.gameCount = item.gameCount
                 profile.totalMinutes = item.totalMinutes
+                profile.inputFingerprint = item.inputFingerprint ?? ""
                 if existingProfiles[item.id] == nil { modelContext.insert(profile) }
             }
 
@@ -389,6 +460,8 @@ enum ProductDataService {
                 plan.createdAt = item.createdAt
                 plan.updatedAt = importedUpdatedAt
                 plan.isCompleted = item.isCompleted
+                plan.gameID = item.gameID ?? ""
+                plan.sourceConversationID = item.sourceConversationID ?? ""
                 if existingPlans[item.id] == nil { modelContext.insert(plan) }
             }
             return ProductRestoreSummary(
@@ -497,9 +570,11 @@ extension Notification.Name {
 enum ProductDataError: LocalizedError {
     case unsupportedBackup
     case invalidBackup(String)
+    case invalidEdit(String)
 
     var errorDescription: String? {
         switch self {
+        case .invalidEdit(let reason): reason
         case .unsupportedBackup: "这个备份版本暂不支持，请使用较新版本的游迹。"
         case .invalidBackup(let reason): "备份暂时无法恢复：\(reason)。本地记录未更改，请保留原备份。"
         }
@@ -702,59 +777,70 @@ enum SyncReminderError: LocalizedError {
 @MainActor
 enum ProfileShareCardService {
     static func makeCard(text: String, subtitle: String) throws -> URL {
-        let size = CGSize(width: 1080, height: 1440)
-        let renderer = UIGraphicsImageRenderer(size: size)
+        let cleaned = text
+            .replacingOccurrences(of: "#", with: "")
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 13
+        let ink = UIColor(red: 0.94, green: 0.96, blue: 0.93, alpha: 1)
+        let muted = UIColor(red: 0.58, green: 0.65, blue: 0.63, alpha: 1)
+        let accent = UIColor(red: 0.83, green: 0.96, blue: 0.42, alpha: 1)
+        let bodyAttributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 30, weight: .regular),
+            .foregroundColor: ink,
+            .paragraphStyle: paragraph
+        ]
+        let bodyHeight = ceil((cleaned as NSString).boundingRect(
+            with: CGSize(width: 840, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: bodyAttributes, context: nil
+        ).height)
+        let size = CGSize(width: 1080, height: max(1440, bodyHeight + 720))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
         let image = renderer.image { context in
             let cg = context.cgContext
-            let colors = [
-                UIColor(red: 0.96, green: 0.95, blue: 0.91, alpha: 1).cgColor,
-                UIColor(red: 0.91, green: 0.87, blue: 0.98, alpha: 1).cgColor,
-            ] as CFArray
-            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
-                cg.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: size.width, y: size.height), options: [])
-            }
-
-            let card = UIBezierPath(roundedRect: CGRect(x: 70, y: 70, width: 940, height: 1300), cornerRadius: 48)
-            UIColor.white.withAlphaComponent(0.9).setFill()
+            UIColor(red: 0.035, green: 0.051, blue: 0.055, alpha: 1).setFill()
+            cg.fill(CGRect(origin: .zero, size: size))
+            let cardRect = CGRect(x: 60, y: 60, width: 960, height: size.height - 120)
+            let card = UIBezierPath(roundedRect: cardRect, cornerRadius: 40)
+            UIColor(red: 0.075, green: 0.094, blue: 0.098, alpha: 1).setFill()
             card.fill()
+            cg.saveGState()
+            card.addClip()
+            UIImage(named: "MemoryCrystal")?.draw(in: CGRect(x: 60, y: 60, width: 960, height: 640))
+            let colors = [UIColor.clear.cgColor, UIColor(red: 0.075, green: 0.094, blue: 0.098, alpha: 1).cgColor] as CFArray
+            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
+                cg.drawLinearGradient(gradient, start: CGPoint(x: 0, y: 180), end: CGPoint(x: 0, y: 540), options: [.drawsAfterEndLocation])
+            }
+            cg.restoreGState()
+            UIColor.white.withAlphaComponent(0.12).setStroke()
+            card.lineWidth = 2
+            card.stroke()
 
-            ("游迹 · 游戏人格" as NSString).draw(
-                in: CGRect(x: 120, y: 125, width: 840, height: 80),
-                withAttributes: [
-                    .font: UIFont.systemFont(ofSize: 48, weight: .black),
-                    .foregroundColor: UIColor(red: 0.29, green: 0.18, blue: 0.66, alpha: 1),
-                ]
+            ("YOUJI / PLAYER PROFILE" as NSString).draw(
+                in: CGRect(x: 120, y: 135, width: 840, height: 32),
+                withAttributes: [.font: UIFont.monospacedSystemFont(ofSize: 20, weight: .bold), .foregroundColor: accent]
+            )
+            ("我的游戏人格" as NSString).draw(
+                in: CGRect(x: 120, y: 200, width: 840, height: 80),
+                withAttributes: [.font: UIFont.systemFont(ofSize: 58, weight: .bold), .foregroundColor: ink]
             )
             (subtitle as NSString).draw(
-                in: CGRect(x: 120, y: 205, width: 840, height: 52),
-                withAttributes: [
-                    .font: UIFont.systemFont(ofSize: 24, weight: .semibold),
-                    .foregroundColor: UIColor.secondaryLabel,
-                ]
+                in: CGRect(x: 120, y: 305, width: 840, height: 70),
+                withAttributes: [.font: UIFont.systemFont(ofSize: 24, weight: .medium), .foregroundColor: muted]
             )
-
-            let cleaned = text
-                .replacingOccurrences(of: "#", with: "")
-                .replacingOccurrences(of: "**", with: "")
-                .replacingOccurrences(of: "`", with: "")
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineSpacing = 13
             (cleaned as NSString).draw(
-                with: CGRect(x: 120, y: 300, width: 840, height: 930),
+                with: CGRect(x: 120, y: 470, width: 840, height: bodyHeight + 4),
                 options: [.usesLineFragmentOrigin, .usesFontLeading],
-                attributes: [
-                    .font: UIFont.systemFont(ofSize: 30, weight: .regular),
-                    .foregroundColor: UIColor.label,
-                    .paragraphStyle: paragraph,
-                ],
-                context: nil
+                attributes: bodyAttributes, context: nil
             )
-            ("YOUR GAME BRAIN · 只包含本次分析文本" as NSString).draw(
-                in: CGRect(x: 120, y: 1280, width: 840, height: 40),
-                withAttributes: [
-                    .font: UIFont.monospacedSystemFont(ofSize: 18, weight: .bold),
-                    .foregroundColor: UIColor.tertiaryLabel,
-                ]
+            ("游迹 · 记录热爱，收藏冒险。" as NSString).draw(
+                in: CGRect(x: 120, y: size.height - 145, width: 840, height: 40),
+                withAttributes: [.font: UIFont.systemFont(ofSize: 22, weight: .medium), .foregroundColor: muted]
             )
         }
         guard let data = image.pngData() else { throw CocoaError(.fileWriteUnknown) }
@@ -788,6 +874,7 @@ extension BackupGame {
         case firstPlayedAt, lastPlayedAt, weeklyMinutes, trophiesEarned, trophiesDefined
         case platinumTrophiesEarned, trophiesSyncedAt, updatedAt, userEditedAt
         case isFavorite, isManuallyHidden, isPinnedVisible, personalNote, playStatus
+        case weeklyEndingDayKey
     }
 
     init(from decoder: Decoder) throws {
@@ -818,6 +905,7 @@ extension BackupGame {
         isPinnedVisible = try values.decodeIfPresent(Bool.self, forKey: .isPinnedVisible) ?? false
         personalNote = try values.decodeIfPresent(String.self, forKey: .personalNote) ?? ""
         playStatus = try values.decodeIfPresent(GamePlayStatus.self, forKey: .playStatus) ?? .played
+        weeklyEndingDayKey = try values.decodeIfPresent(String.self, forKey: .weeklyEndingDayKey)
     }
 }
 
@@ -845,6 +933,8 @@ extension ProductDataService {
         try unique(backup.plans.map(\.id))
 
         var identities: [String: BackupIdentity] = [:]
+        var dayKeyCalendar = Calendar(identifier: .gregorian)
+        dayKeyCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
         for game in try modelContext.fetch(FetchDescriptor<GameRecord>()) {
             identities[game.applicationID] = BackupIdentity(platform: game.platform, accountID: game.accountID, titleID: game.resolvedTitleID)
         }
@@ -861,6 +951,9 @@ extension ProductDataService {
             identities[game.applicationID] = identity
             try require(DataValidation.minutes(game.totalMinutes), "游玩时长超出范围")
             try require(game.weeklyMinutes.count == 7 && game.weeklyMinutes.allSatisfy(DataValidation.minutes), "七日游玩数据不完整")
+            let endingDayKey = game.weeklyEndingDayKey ?? ""
+            try require(endingDayKey.isEmpty || DailyPlayActivity.date(fromDayKey: endingDayKey, calendar: dayKeyCalendar) != nil,
+                        "七日游玩数据的结束日期不正确")
             try require([game.trophiesEarned, game.trophiesDefined, game.platinumTrophiesEarned].allSatisfy(DataValidation.trophies), "奖杯数量超出范围")
             // Old records can have unknown defined counts; preserve them without inventing a ratio.
             try require(game.trophiesDefined == 0 || game.trophiesEarned <= game.trophiesDefined, "奖杯数量不一致")
@@ -891,6 +984,27 @@ extension ProductDataService {
         }
         for item in backup.profiles {
             try require(item.minimumHours >= 0 && item.minimumHours <= DataValidation.maximumMinutes / 60 && item.gameCount >= 0 && DataValidation.minutes(item.totalMinutes), "人格记录数值超出范围")
+        }
+        let localConversations = try modelContext.fetch(FetchDescriptor<AIConversation>())
+        var conversationScopes = Dictionary(uniqueKeysWithValues: localConversations.map { ($0.id, $0.accountScopeKey) })
+        for conversation in backup.conversations { conversationScopes[conversation.id] = conversation.accountScopeKey }
+        for item in backup.plans {
+            if let gameID = item.gameID, !gameID.isEmpty {
+                if let game = identities[gameID] {
+                    try require(AccountScope.contains(item.accountScopeKey, platform: game.platform, accountID: game.accountID), "清单关联的游戏不属于同一账号")
+                } else {
+                    // Preserve readable plans when the linked game is no longer in the archive.
+                    let parts = gameID.split(separator: ":", omittingEmptySubsequences: false)
+                    let platform: GamePlatform? = parts.first == "ps" ? .playStation : (parts.first == "switch" ? .switchConsole : nil)
+                    try require(parts.count == 3 && !parts[2].isEmpty && platform.map {
+                        AccountScope.contains(item.accountScopeKey, platform: $0, accountID: String(parts[1]))
+                    } == true, "清单关联的游戏身份不正确")
+                }
+            }
+            if let sourceID = item.sourceConversationID, !sourceID.isEmpty {
+                guard let id = UUID(uuidString: sourceID) else { throw ProductDataError.invalidBackup("清单来源对话标识不正确") }
+                try require(conversationScopes[id].map { $0 == item.accountScopeKey } ?? true, "清单来源对话不属于同一账号")
+            }
         }
     }
 }

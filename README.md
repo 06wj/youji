@@ -20,13 +20,15 @@ YouJi organizes the games you have actually played, the time you invested, and t
 
 ## Screenshots
 
+The new **Midnight Archive** design pairs original adventure art with a dark, cover-first library, a list option, cinematic game details, and a unified Game Brain interface. [Preview the redesign](docs/DESIGN.md). The simulator previews below use fictional play history.
+
 <p align="center">
   <strong>Game Brain</strong>
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/export.png" width="32%" alt="Generate a gaming profile by platform and depth of play">
-  <img src="docs/screenshots/ai-chat.png" width="32%" alt="Get replay recommendations grounded in your own game history">
+  <img src="docs/screenshots/product/ai-analysis.png" width="32%" alt="Generate a gaming profile by platform and depth of play">
+  <img src="docs/screenshots/product/ai-chat.png" width="32%" alt="Get replay recommendations grounded in your own game history">
 </p>
 
 <p align="center">
@@ -34,9 +36,9 @@ YouJi organizes the games you have actually played, the time you invested, and t
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/overview.png" width="23%" alt="YouJi overview">
-  <img src="docs/screenshots/playstation.png" width="23%" alt="PlayStation games and trophies">
-  <img src="docs/screenshots/switch.png" width="23%" alt="Nintendo Switch seven-day activity">
+  <img src="docs/screenshots/product/overview.png" width="23%" alt="YouJi overview">
+  <img src="docs/screenshots/product/playstation.png" width="23%" alt="PlayStation games and trophies">
+  <img src="docs/screenshots/product/switch.png" width="23%" alt="Nintendo Switch seven-day activity">
 </p>
 
 ## It understands your history, not just your genres
@@ -60,9 +62,10 @@ Chats are saved locally and organized into easy-to-find topics. Continue an exis
 - **Recent activity:** Understand your Nintendo Switch rhythm through a focused seven-day view.
 - **Play calendar:** Keep exact Switch play dates and per-game minutes on device after each sync, even after they leave Nintendo's seven-day window.
 - **Long-term trends:** Review seven-day, 30-day, and annual changes in play time and trophies, with calculation details available only when you ask for them.
-- **A focused but complete home:** Keep the cross-platform overview and full library, with small shortcuts inside the overview card for drill-down insights and Game Brain; plans move to the More menu, while Switch daily records stay in the Switch view.
+- **A home that follows your progress:** Start with direct platform connection buttons; return to a compact archive, recently played games, visible update times, and a local seven-day recap. The full library keeps its play-time sorting and cover/list choice.
 - **Searchable game archive:** Search by title or note, open a game timeline, and add favorites, visibility, status, and private notes.
-- **Account-aware history:** See which account is connected, inspect per-platform sync receipts, and reopen disconnected local archives without mixing accounts.
+- **Recoverable sync:** See per-platform stages and trophy progress, browse already-saved PS games, and reconnect or retry directly. Old records remain available when part of a sync fails.
+- **Account-aware history:** See which account is connected, inspect dated sync receipts, and reopen disconnected local archives without mixing accounts.
 - **A cleaner collection:** Keep meaningful games in focus while short trials and long-forgotten launches stay out of the way.
 - **Portable local data:** Export a complete backup or game-library table, restore by merging, and remove an account archive or all local content when you choose.
 - **Built for the long term:** Sync when you choose, optionally enable a weekly local reminder, keep your covers and history on device, and let the library grow with you.
@@ -74,7 +77,9 @@ Chats are saved locally and organized into easy-to-find topics. Continue an exis
 3. Open Game Brain to generate a profile or talk through what to play next.
 
 AI features use your own model configuration, which you can add in Settings the first time you use them.
-The default configuration uses Celitech's OpenAI-compatible endpoint. You can replace it with another HTTPS Chat Completions-compatible endpoint and test the connection in Settings.
+The default preset uses Celitech's OpenAI-compatible endpoint. Advanced settings support a custom HTTPS Chat Completions-compatible endpoint and model. Save and return to the original task, or explicitly test the connection; saving alone sends no game data.
+
+Game Brain reopens your latest saved profile and its original filters. Profile follow-ups and short-session/replay prompts create editable drafts; sending remains explicit. Chats preserve drafts and their original game snapshot, and can start a new conversation with updated local records. Saved suggestions can be read in full, edited, linked to a game, and used to mark that game as playing.
 
 ## Your data stays under your control
 
@@ -84,6 +89,7 @@ The default configuration uses Celitech's OpenAI-compatible endpoint. You can re
 - The AI receives only the information needed for the analysis or conversation, never your platform credentials.
 - AI conversations are separated by the local account scope, personality results can be revisited and shared as image cards, and useful replies can be saved to a local play/replay list.
 - Complete backups never include platform credentials or the AI API key.
+- Backup v2 also carries chat drafts, plan links, profile input fingerprints, and stable Switch window dates; older backups remain readable.
 - Backup v2 preserves unreadable conversation data and still imports v1 backups. Restore validates account identities before writing and can repair damaged conversation components from an older readable backup.
 - Failed writes leave the visible archive unchanged. Deleting, disconnecting, or restoring invalidates older in-flight requests so they cannot repopulate the archive.
 - If the database cannot open, a recovery screen lets you export its original files or restore a JSON backup into a new database while keeping the original. A raw recovery package preserves files for recovery work; it is not a JSON backup.

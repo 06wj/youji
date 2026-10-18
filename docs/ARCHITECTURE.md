@@ -35,9 +35,9 @@
 | 游戏记录、时长、最近游玩、奖杯 | SwiftData | `GameRecord`，按平台账号隔离当前累计值；平台数据更新时间与用户编辑时间分开记录 |
 | 每次同步的累计值 | SwiftData | `PlaySnapshot`，保存游戏、账号、平台、时间、累计分钟与已获奖杯 |
 | Switch 每日游玩 | SwiftData | `DailyPlayActivity`，用不随时区变化的 `yyyy-MM-dd` 日期键，按账号、游戏与自然日唯一保存精确分钟数 |
-| AI 会话、消息、游戏上下文快照 | SwiftData | `AIConversation`，用于会话列表、继续聊天和删除会话 |
-| AI 人格历史 | SwiftData | `AIProfileResult`，按账号范围保存生成时间、筛选条件和结果文本 |
-| 待玩与重温清单 | SwiftData | `SavedGamePlan`，保存手动计划或从 AI 回答沉淀的灵感 |
+| AI 会话、消息、游戏上下文快照 | SwiftData | `AIConversation`，保存消息、冻结游戏上下文及独立未发送草稿，用于会话列表、继续聊天和删除会话 |
+| AI 人格历史 | SwiftData | `AIProfileResult`，按账号范围保存生成时间、筛选条件、允许输入字段的指纹和结果文本 |
+| 待玩与重温清单 | SwiftData | `SavedGamePlan`，保存完整标题/说明、可选完整游戏 ID 和来源会话 ID；旧记录的关联为空 |
 | PlayStation 刷新令牌 | Keychain | `AfterFirstUnlockThisDeviceOnly` |
 | Nintendo session token | Keychain | `AfterFirstUnlockThisDeviceOnly` |
 | AI API Key | Keychain | 用户在设置中填写，只在生成分析时读取 |
@@ -70,7 +70,7 @@ PlaySnapshot(
 
 ## 每日游玩记录
 
-Nintendo 返回最近 7 个自然日的逐日游戏分钟数。同步时会先合并同一天同一游戏的重复条目，再以平台响应中的自然日键 `<platform>:<accountID>:<titleID>:<yyyy-MM-dd>` 写入 `DailyPlayActivity`。日期键独立于设备时区，显示时才转换成本地日期。重复同步只更新同一条记录，已经滚出 Nintendo 七日窗口的历史记录不会删除。升级后首次打开首页还会用现有 `weeklyMinutes` 和该记录最后同步时间回填已有七日数据。
+Nintendo 返回最近 7 个自然日的逐日游戏分钟数。同步时会先合并同一天同一游戏的重复条目，再以平台响应中的自然日键 `<platform>:<accountID>:<titleID>:<yyyy-MM-dd>` 写入 `DailyPlayActivity`。日期键独立于设备时区，显示时才转换成本地日期。重复同步只更新同一条记录，已经滚出 Nintendo 七日窗口的历史记录不会删除。`NintendoAPIClient.normalize` 将映射时的自然日保存为 `SyncedGame.weeklyEndingDayKey`，协调层连同七元素数组写入 `GameRecord`。显示窗口始终是当前设备近七个自然日：精确 `DailyPlayActivity` 优先，数组只能根据合法的稳定窗口日期补充；未知日期标为缺少记录，不等同于零。旧版本没有稳定日期的数组不再从 `updatedAt` 猜测或回填日期，已持久化的每日记录继续保留。
 
 PlayStation 当前接口没有逐日分钟明细，因此不会用快照区间增量伪造精确日期；游玩日历目前只展示 Switch 的精确记录。
 
@@ -97,15 +97,15 @@ PlayStation 当前接口没有逐日分钟明细，因此不会用快照区间�
 
 ## UI
 
-- `DashboardView`：总览与平台视图、完整跨平台游戏库、排序和同步入口；洞察与游戏大脑以小型胶囊入口嵌入总览卡，待玩清单位于更多菜单，同步回执留在平台页，Switch 游玩日历只出现在 Switch 视图。
-- `GameDetailView`：单款游戏的累计时长图表（计算口径收进 info）、奖杯/每日记录，以及位于末尾的“我的档案”和待玩清单行动入口；不向玩家展示内部档案标识。
-- `AccountCenterView`：当前连接身份、分平台同步时间、同步变化回执和离线历史账号档案。
+- `DashboardView`：首次连接欢迎页与已有档案首页；紧凑总览、最近游玩、更新时间、洞察/AI/待玩入口、本地周回顾及完整游戏库。原排序和筛选不变。错误按平台给出直接重连/重试，空态按账号/同步/隐藏状态给出下一步。Switch 日历只读取所选 Switch 账号。
+- `GameDetailView`：封面下提供收藏、游玩状态、加入或查看待玩计划；时间线、奖杯/每日记录和备注位于下方。修改通过隔离写入提交，失败保留原界面记录。
+- `AccountCenterView`：当前连接身份、分平台同步时间、阶段进度、变化回执和离线历史账号档案；提供连接、重连和重试操作，所有请求仍经 `SyncCoordinator`。
 - `InsightsView` / `SavedPlansView`：跨游戏总时间线、7 天、30 天和年度变化；同步覆盖与计算方法统一收进 info，不在主卡片展示快照/增量术语。总时间线可按最新或最早优先查看全部记录，洞察周期支持下钻到月度、游戏/奖杯贡献和单款档案；行动清单区分待行动/已完成并防止整行误触。
 - `DataManagementView`：完整 JSON 备份、合并恢复、CSV、诊断摘要和本地数据删除。
 - `ConnectPlayStationView` / `ConnectNintendoView`：平台授权。
-- `AIAnalysisView`：本地筛选、AI 人格分析、依据预览和辅助复制。
+- `AIAnalysisView`：恢复最近人格及原平台/时长筛选，仅显示当前条件的结果；比较允许输入字段的指纹提示主动更新。人格追问和情境按钮只准备草稿，不发请求。
 - `AIChatListView`：展示持久化会话，支持新建、继续和确认删除。
-- `AIChatView`：展示当前会话并即时保存消息，不展示内部游戏上下文；对话所用游戏记录的时点说明收进 info。
+- `AIChatView`：展示快照日期和款数，保存消息及未发送草稿；末条用户消息未获回复时可显式继续生成。新记录与冻结内容不同时，可另建会话，旧快照不变；新视图按 ID 从 UI 上下文取对象，避免跨上下文模型。
 - `AIPrompts`：集中维护共享的“游戏大脑”身份、游戏信息序列化、人格任务和聊天任务提示词。
 - `SettingsView`：从首页进入时优先展示产品与数据，从 AI 页面进入时优先展示模型配置；支持保存/测试 AI 服务，并管理同步提醒、数据和隐私入口。
 - `AIAnalysisClient`：仅在用户点击生成、发送或测试连接时，调用用户配置的 OpenAI Chat Completions 兼容文本接口；默认是策量智算。
@@ -164,3 +164,19 @@ PlayStation 当前接口没有逐日分钟明细，因此不会用快照区间�
 用户选择 JSON 备份后，恢复先写入新的 `YouJi-Recovered-<UUID>/default.store`，完整提交后才把该目录名原子写入同目录的 `youji-active-store.json` 并切换界面；失败不切换档案；为避免旧版系统仍持有 SQLite 文件句柄，失败尝试的独立目录也暂时保留。原始数据库始终保留。已选中的恢复文件缺失时会停留在恢复界面，不会悄悄新建空库。
 
 回归测试包含真实旧版 SQLite 模型升级、只读存储保存失败、原始损坏文件保全、旧备份兼容、重复恢复、原始对话字节往返，以及延迟网络响应与删除/恢复交错。
+
+## 视觉层与开发预览
+
+`Design/Theme.swift` 统一深色表面、平台色、按钮、白金标记与装饰插画。游戏库仅将封面墙 / 列表偏好存入 UserDefaults；辅助功能字号自动使用列表，不影响游戏筛选和排序。插画随 Asset Catalog 打包，不触发远程生成。封面列表沿用 512 像素解码，详情使用 1024 像素；内存缓存按尺寸区分，原始磁盘文件与下载去重仍共用同一 URL 键。
+
+Debug 模拟器可通过 `--youji-design-preview` 使用独立内存容器查看虚构游玩数据；可搭配 `--youji-screenshot-route`。不向正式数据库插入预览数据，真机与发行构建不可启用。详见 [美术规范](DESIGN.md)。
+
+## 2026-10-19 产品流程
+
+`SyncCoordinator.syncProgress` 仅描述活动请求，包含平台、阶段、已完成/总项数以及列表是否已保存；`issue(for:)` 按平台保留可重连、可重试、部分成功的问题。PS 仍先保存全库，再串行补奖杯，每项立即落盘，缓存成功时间规则不变。用户关闭连接页先浏览不会取消已明确发起的导入。UI/诊断只使用受控错误文案，不展示平台原始响应。
+
+`LibraryExperience.swift` 的日期窗口和本地周回顾不联网。周回顾只用当前账号的精确 Switch 每日活动与 PS 快照变化，首条累计快照不作为一周游玩量；PS 变化归入后一次同步日，并明确说明可能包含更早游玩。没有记录不代表没有玩。
+
+计划关联完整 `applicationID`，不会按同名游戏混合平台或账号。开始一条关联计划在同一事务中把游戏标为“正在玩”、计划标为完成，不改平台时长和最后游玩日期。关联已移除时文字仍可读。旧空账号范围会话迁移时，同步迁移来自该会话且范围为空的计划。
+
+完整备份仍使用 v2：新增字段可选读取，旧 SQLite 使用默认空值迁移。`AIConversation.draft` 与发送消息分开，按 `updatedAt` 合并；旧备份缺草稿字段不清除设备上的草稿，新备份明确空值表示清空。计划关联在恢复前校验账号范围；稳定窗口日期只接受合法 yyyy-MM-dd。新建或从最新记录分支的聊天仍快照全部当前账号 >60 分钟游戏，AI 只接收平台、标题、分钟和奖杯比例及用户显式发送的对话。

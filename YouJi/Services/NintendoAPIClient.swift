@@ -124,9 +124,8 @@ actor NintendoAPIClient {
         var dailyByTitle: [String: [String: Int]] = [:]
 
         for day in history.recentPlayHistories {
-            guard let date = Self.parsePlayedDay(day.playedDate) else { continue }
-            let playedDay = calendar.startOfDay(for: date)
             let playedDayKey = String(day.playedDate.prefix(10))
+            guard let playedDay = DailyPlayActivity.date(fromDayKey: playedDayKey, calendar: calendar) else { continue }
             let offset = calendar.dateComponents([.day], from: playedDay, to: today).day ?? 99
             guard (0...6).contains(offset) else { continue }
             for item in day.dailyPlayHistories {
@@ -149,7 +148,8 @@ actor NintendoAPIClient {
                 imageURL: item.imageURL,
                 firstPlayedAt: Self.parseDate(item.firstPlayedAt),
                 lastPlayedAt: Self.parseDate(item.lastPlayedAt),
-                weeklyMinutes: weeklyByTitle[item.titleID] ?? Array(repeating: 0, count: 7)
+                weeklyMinutes: weeklyByTitle[item.titleID] ?? Array(repeating: 0, count: 7),
+                weeklyEndingDayKey: DailyPlayActivity.dayKey(for: today, calendar: calendar)
             )
         }
         let dailyActivities: [SyncedDailyActivity] = dailyByTitle.flatMap { titleEntry in

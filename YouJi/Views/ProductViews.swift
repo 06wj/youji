@@ -12,6 +12,8 @@ struct GameDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Bindable var game: GameRecord
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var selectedPlan: SavedGamePlan?
     @Query private var snapshots: [PlaySnapshot]
     @Query private var activities: [DailyPlayActivity]
     @Query(sort: \SavedGamePlan.createdAt, order: .reverse) private var plans: [SavedGamePlan]
@@ -46,11 +48,11 @@ struct GameDetailView: View {
                 ScrollView {
                     VStack(spacing: 18) {
                         hero
+                        quickActions
                         historyCard.id(GameDetailInitialSection.history.rawValue)
                         if game.platform == .playStation { trophyCard }
                         if game.platform == .switchConsole, !activities.isEmpty { dailyCard }
                         personalCard.id(GameDetailInitialSection.personal.rawValue)
-                        planCard
                     }
                     .padding(18)
                     .padding(.bottom, 30)
@@ -78,6 +80,9 @@ struct GameDetailView: View {
                     }
                 }
             }
+            .sheet(item: $selectedPlan) { plan in
+                SavedPlanDetailView(plan: plan, accountScopeKey: accountScopeKey)
+            }
             .alert("时间线说明", isPresented: $showingHistoryInfo) {
                 Button("知道了", role: .cancel) {}
             } message: {
@@ -95,25 +100,52 @@ struct GameDetailView: View {
     }
 
     private var hero: some View {
-        HStack(spacing: 16) {
-            CachedCoverImage(urlString: game.imageURL)
-                .frame(width: 104, height: 104)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            VStack(alignment: .leading, spacing: 8) {
-                Text(game.platform.rawValue.uppercased())
-                    .font(.system(size: 9, weight: .black, design: .monospaced))
-                    .foregroundStyle(game.platform == .playStation ? Color.blue : Color.red)
-                Text(game.title).font(.title3.bold()).lineLimit(3)
-                Label(format(minutes: game.totalMinutes), systemImage: "clock.fill")
-                    .font(.headline).foregroundStyle(YJColor.purple)
-                if game.isFavorite {
-                    Label("已收藏", systemImage: "heart.fill")
-                        .font(.caption.bold()).foregroundStyle(YJColor.coral)
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    PlatformBadge(platform: game.platform)
+                    Spacer()
+                    if game.isFavorite {
+                        Image(systemName: "heart.fill").foregroundStyle(YJColor.coral)
+                            .accessibilityLabel("已收藏")
+                    }
+                }
+                Spacer(minLength: 130)
+                Text("GAME ARCHIVE")
+                    .font(.system(.caption2, design: .monospaced, weight: .bold))
+                    .tracking(2).foregroundStyle(YJColor.lime)
+                Text(game.title).font(.system(.title, design: .rounded, weight: .bold))
+                    .foregroundStyle(YJColor.ink).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(22)
+            .background {
+                GeometryReader { proxy in
+                    CachedCoverImage(urlString: game.imageURL, maxPixelSize: 1024)
+                        .frame(width: proxy.size.width, height: proxy.size.height).clipped()
+                        .overlay(LinearGradient(stops: [
+                            .init(color: .black.opacity(0.10), location: 0),
+                            .init(color: YJColor.card.opacity(0.35), location: 0.4),
+                            .init(color: YJColor.card, location: 0.95)
+                        ], startPoint: .top, endPoint: .bottom))
+                }
+                .accessibilityHidden(true)
+            }
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("累计游玩").font(.caption).foregroundStyle(YJColor.muted)
+                    Text(format(minutes: game.totalMinutes))
+                        .font(.system(.title, design: .rounded, weight: .semibold))
+                        .foregroundStyle(YJColor.lime)
+                }
+                Spacer(minLength: 0)
+                if game.platform == .playStation, game.platinumTrophiesEarned > 0 {
+                    PlatinumBadge()
+                } else {
+                    Text(game.playStatus.rawValue).font(.caption.bold()).foregroundStyle(YJColor.muted)
                 }
             }
-            Spacer(minLength: 0)
+            .padding(.horizontal, 22).padding(.bottom, 22)
         }
-        .padding(18)
         .youjiCard()
         .accessibilityElement(children: .combine)
     }
@@ -121,19 +153,12 @@ struct GameDetailView: View {
     private var personalCard: some View {
         VStack(alignment: .leading, spacing: 15) {
             Text("MY ARCHIVE / 我的档案").eyebrowStyle()
-            Toggle("收藏这款游戏", isOn: editableGameBinding(\.isFavorite))
             Toggle("从游戏库隐藏", isOn: editableGameBinding(\.isManuallyHidden))
             if game.totalMinutes < 60,
                let lastPlayedAt = game.lastPlayedAt,
                lastPlayedAt < (Calendar.current.date(byAdding: .month, value: -6, to: .now) ?? .distantPast) {
                 Toggle("即使低时长且较久未玩也始终显示", isOn: editableGameBinding(\.isPinnedVisible))
             }
-            Picker("游玩状态", selection: editableGameBinding(\.playStatus)) {
-                ForEach(GamePlayStatus.allCases, id: \.self) { status in
-                    Text(status.rawValue).tag(status)
-                }
-            }
-            .pickerStyle(.menu)
             VStack(alignment: .leading, spacing: 7) {
                 Text("私人备注").font(.caption.bold()).foregroundStyle(YJColor.muted)
                 TextEditor(text: editableGameBinding(\.personalNote))
@@ -153,63 +178,74 @@ struct GameDetailView: View {
         Binding(
             get: { game[keyPath: keyPath] },
             set: {
-                game[keyPath: keyPath] = $0
-                game.userEditedAt = .now
+                do {
+                    try ProductDataService.updateGame(game.applicationID, field: keyPath, value: $0, modelContext: modelContext)
+                } catch { persistenceError = error.localizedDescription }
             }
         )
     }
 
     private var existingPlan: SavedGamePlan? {
         plans.first {
-            $0.accountScopeKey == accountScopeKey
-                && !$0.isCompleted
-                && $0.title.compare(game.title, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+            $0.accountScopeKey == accountScopeKey && !$0.isCompleted && $0.gameID == game.applicationID
         }
     }
 
-    private var planCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("NEXT / 下一步").eyebrowStyle()
-            HStack(spacing: 12) {
-                Image(systemName: existingPlan == nil ? "bookmark" : "bookmark.fill")
-                    .font(.headline.bold())
-                    .foregroundStyle(existingPlan == nil ? YJColor.ink : YJColor.purple)
-                    .frame(width: 42, height: 42)
-                    .background(YJColor.paper, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(existingPlan == nil ? "想以后继续这段冒险？" : "已加入待玩与重温")
-                        .font(.subheadline.bold())
-                    Text(existingPlan == nil ? "把这款游戏加入行动清单，回到首页也能继续。" : "可以在首页的“接下来”或清单中找到它。")
-                        .font(.caption)
-                        .foregroundStyle(YJColor.muted)
-                }
-                Spacer(minLength: 0)
+    private var quickActions: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(spacing: 10))
+        return layout {
+            Button {
+                editableGameBinding(\.isFavorite).wrappedValue = !game.isFavorite
+            } label: {
+                actionLabel(game.isFavorite ? "已收藏" : "收藏", icon: game.isFavorite ? "heart.fill" : "heart", accent: YJColor.coral)
             }
-            if existingPlan == nil {
-                Button(action: addToPlans) {
-                    Label("加入待玩与重温", systemImage: "plus")
-                        .font(.subheadline.bold())
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
+            Menu {
+                ForEach(GamePlayStatus.allCases, id: \.self) { status in
+                    Button {
+                        editableGameBinding(\.playStatus).wrappedValue = status
+                    } label: {
+                        Label(status.rawValue, systemImage: game.playStatus == status ? "checkmark.circle.fill" : "circle")
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(YJColor.ink)
+            } label: {
+                actionLabel(game.playStatus.rawValue,
+                            icon: "play.circle.fill", accent: YJColor.lime)
+            }
+            .accessibilityLabel("游玩状态：\(game.playStatus.rawValue)，点按修改")
+            Button {
+                if let existingPlan { selectedPlan = existingPlan } else { addToPlans() }
+            } label: {
+                actionLabel(existingPlan == nil ? "加入待玩" : "查看计划",
+                            icon: existingPlan == nil ? "bookmark" : "bookmark.fill", accent: YJColor.purple)
             }
         }
-        .padding(17)
-        .youjiCard()
+        .buttonStyle(.plain)
+    }
+
+    private func actionLabel(_ title: String, icon: String, accent: Color) -> some View {
+        VStack(spacing: 7) {
+            Image(systemName: icon).font(.headline).foregroundStyle(accent)
+            Text(title).font(.caption.bold()).foregroundStyle(YJColor.ink)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 14)
+        .background(YJColor.card, in: RoundedRectangle(cornerRadius: 15))
+        .overlay(RoundedRectangle(cornerRadius: 15).stroke(YJColor.line, lineWidth: 1))
     }
 
     private func addToPlans() {
         let plan = SavedGamePlan(
             accountScopeKey: accountScopeKey,
             title: game.title,
-            note: "来自 \(game.platform.rawValue) 游戏档案"
+            note: "来自 \(game.platform.rawValue) 游戏档案",
+            gameID: game.accountID.isEmpty ? "" : game.applicationID
         )
-        do { try LocalPersistence.transaction(modelContext) { $0.insert(plan) } }
-        catch {
-            persistenceError = error.localizedDescription
-        }
+        let id = plan.id
+        do {
+            try LocalPersistence.transaction(modelContext) { $0.insert(plan) }
+            selectedPlan = try modelContext.fetch(FetchDescriptor<SavedGamePlan>(predicate: #Predicate { $0.id == id })).first
+        } catch { persistenceError = error.localizedDescription }
     }
 
     private var dailySnapshots: [PlaySnapshot] {
@@ -355,6 +391,7 @@ struct AccountCenterView: View {
     let games: [GameRecord]
     @Binding var selectedArchive: AccountArchiveSelection?
     @State private var disconnectingPlatform: GamePlatform?
+    @State private var connectingPlatform: GamePlatform?
     @State private var archiveToDelete: AccountArchiveSelection?
     @State private var persistenceError: String?
 
@@ -383,12 +420,20 @@ struct AccountCenterView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(YJColor.paper)
             .navigationTitle("账号与同步")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
             .alert("本地保存失败", isPresented: Binding(
                 get: { persistenceError != nil }, set: { if !$0 { persistenceError = nil } }
             )) { Button("知道了", role: .cancel) {} } message: { Text(persistenceError ?? "") }
+            .sheet(isPresented: Binding(
+                get: { connectingPlatform != nil }, set: { if !$0 { connectingPlatform = nil } }
+            )) {
+                if connectingPlatform == .playStation { ConnectPlayStationView(coordinator: sync) }
+                else { ConnectNintendoView(coordinator: sync) }
+            }
             .confirmationDialog("断开这个平台？", isPresented: Binding(
                 get: { disconnectingPlatform != nil },
                 set: { if !$0 { disconnectingPlatform = nil } }
@@ -426,26 +471,63 @@ struct AccountCenterView: View {
         let name = platform == .playStation ? sync.playStationAccountName : sync.nintendoAccountName
         let date = platform == .playStation ? sync.lastPlayStationSyncAt : sync.lastNintendoSyncAt
         let receipt = platform == .playStation ? sync.playStationReceipt : sync.nintendoReceipt
+        let issue = sync.issue(for: platform)
         return VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Image(systemName: platform == .playStation ? "playstation.logo" : "gamecontroller.fill")
                     .foregroundStyle(platform == .playStation ? Color.blue : Color.red)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(platform.rawValue).font(.headline)
-                    Text(connected ? (name.isEmpty ? "已连接" : name) : "未连接")
+                    Text(connected ? (name.isEmpty ? "已连接" : name) : (issue?.recovery == .reconnect ? "需要重新连接" : "未连接"))
                         .font(.caption).foregroundStyle(YJColor.muted)
                 }
                 Spacer()
                 if connected {
                     Button("断开", role: .destructive) { disconnectingPlatform = platform }
-                        .font(.caption.bold())
+                        .font(.caption.bold()).buttonStyle(.borderless).disabled(sync.isSyncing)
                 }
             }
-            Text(date.map { "最后成功同步：\($0.formatted(.relative(presentation: .named)))" } ?? "尚未完成过同步")
+            Text(date.map { "更新于 \($0.formatted(.dateTime.month().day().hour().minute()))" } ?? "尚未完成过同步")
                 .font(.caption).foregroundStyle(YJColor.muted)
             if let receipt { receiptLine(receipt) }
+            if let progress = sync.syncProgress, progress.platform == platform {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let completed = progress.completed, let total = progress.total, total > 0 {
+                        ProgressView(value: Double(completed), total: Double(total))
+                    } else { ProgressView().controlSize(.small) }
+                    Text(progress.title).font(.caption.bold())
+                    Text(progress.detail).font(.caption2).foregroundStyle(YJColor.muted)
+                }
+                .tint(platform == .playStation ? YJColor.playStation : YJColor.nintendo)
+            } else {
+                if let issue {
+                    Text(issue.message).font(.caption).foregroundStyle(YJColor.coral)
+                }
+                Button {
+                    performSyncAction(platform, needsConnection: !connected || issue?.recovery == .reconnect)
+                } label: {
+                    Label(issue?.actionTitle ?? (connected ? "同步 \(platform.shortName)" : "连接 \(platform.shortName)"),
+                          systemImage: connected && issue?.recovery != .reconnect ? "arrow.triangle.2.circlepath" : "link")
+                        .font(.subheadline.bold()).frame(maxWidth: .infinity).padding(.vertical, 10)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(platform == .playStation ? YJColor.playStation : YJColor.nintendo)
+                .background(YJColor.paper, in: RoundedRectangle(cornerRadius: 12))
+                .disabled(sync.isSyncing)
+            }
         }
         .padding(.vertical, 5)
+    }
+
+    private func performSyncAction(_ platform: GamePlatform, needsConnection: Bool) {
+        sync.errorMessage = nil
+        if needsConnection { connectingPlatform = platform }
+        else {
+            Task {
+                if platform == .playStation { try? await sync.syncPlayStation(modelContext: modelContext) }
+                else { try? await sync.syncNintendo(modelContext: modelContext) }
+            }
+        }
     }
 
     private func receiptLine(_ receipt: PlatformSyncReceipt) -> some View {
@@ -454,7 +536,7 @@ struct AccountCenterView: View {
             receipt.addedGames > 0 ? "新收录 \(receipt.addedGames) 款" : nil
         ].compactMap { $0 }
         return VStack(alignment: .leading, spacing: 3) {
-            Text(highlights.isEmpty ? "当前记录已是最新" : highlights.joined(separator: " · "))
+            Text(highlights.isEmpty ? "上次同步未发现新的游玩记录" : "上次同步：" + highlights.joined(separator: " · "))
                 .font(.caption.bold())
             if receipt.platform == .playStation,
                receipt.addedTrophies > 0 || receipt.trophyFailures > 0 {
@@ -536,7 +618,7 @@ struct InsightsView: View {
                         Label("打开待玩与重温清单", systemImage: "bookmark.fill")
                             .font(.headline).frame(maxWidth: .infinity).padding(15)
                     }
-                    .buttonStyle(.plain).foregroundStyle(.white).background(YJColor.ink, in: RoundedRectangle(cornerRadius: 16))
+                    .buttonStyle(YJPrimaryButtonStyle())
                 }
                 .padding(18)
             }
@@ -566,13 +648,8 @@ struct InsightsView: View {
     }
 
     private var intro: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("让每次同步留下变化").font(.title2.bold())
-            Text("回看最近一周、一个月和今年的游玩足迹。")
-                .font(.caption).foregroundStyle(YJColor.muted).lineSpacing(3)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18).youjiCard()
+        YJFeatureHeading(eyebrow: "YOUR JOURNEY, IN FOCUS", title: "时间会记得，\n你去过的世界。",
+                         subtitle: "回看每一周、每个月与这一年的游玩足迹。")
     }
 
     private var insightsInfoText: String {
@@ -717,7 +794,7 @@ struct InsightsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(18)
-            .background(LinearGradient(colors: [YJColor.ink, YJColor.purple], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 20))
+            .background(LinearGradient(colors: [Color(red: 0.12, green: 0.19, blue: 0.20), YJColor.card], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 20))
             .foregroundStyle(.white)
         }
         .buttonStyle(.plain)
@@ -1098,6 +1175,7 @@ struct SavedPlansView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SavedGamePlan.createdAt, order: .reverse) private var allPlans: [SavedGamePlan]
     let accountScopeKey: String
+    @State private var selectedPlan: SavedGamePlan?
     @State private var showNewPlan = false
     @State private var newTitle = ""
     @State private var newNote = ""
@@ -1115,8 +1193,8 @@ struct SavedPlansView: View {
                     VStack(spacing: 18) {
                         ContentUnavailableView("清单还是空的", systemImage: "bookmark", description: Text("从游戏档案加入作品、保存 AI 灵感，或手动写下一段计划。"))
                         Button("加入第一条计划") { showNewPlan = true }
-                            .buttonStyle(.borderedProminent)
-                            .tint(YJColor.ink)
+                            .buttonStyle(YJPrimaryButtonStyle())
+                            .tint(YJColor.lime)
                     }
                     .frame(maxWidth: .infinity)
                     .listRowBackground(Color.clear)
@@ -1131,7 +1209,7 @@ struct SavedPlansView: View {
                                 .foregroundStyle(YJColor.muted)
                         }
                     } footer: {
-                        Text("只有点按左侧圆圈才会标记完成，打开页面或查看文字不会误操作。")
+                        Text("点按计划查看全文、编辑或关联游戏；左侧圆圈用于标记完成。")
                     }
 
                     if activePlans.isEmpty {
@@ -1153,11 +1231,16 @@ struct SavedPlansView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(YJColor.paper)
             .navigationTitle("待玩与重温")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("完成") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) { Button { showNewPlan = true } label: { Image(systemName: "plus") } }
+            }
+            .sheet(item: $selectedPlan) { plan in
+                SavedPlanDetailView(plan: plan, accountScopeKey: accountScopeKey)
             }
             .sheet(isPresented: $showNewPlan) {
                 NavigationStack {
@@ -1233,18 +1316,26 @@ struct SavedPlansView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(plan.isCompleted ? "标记为未完成" : "标记为已完成")
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(plan.title)
-                    .font(.subheadline.bold())
-                    .strikethrough(plan.isCompleted)
-                if !plan.note.isEmpty {
-                    Text(plan.note)
-                        .font(.caption)
-                        .foregroundStyle(YJColor.muted)
-                        .lineLimit(3)
+            Button { selectedPlan = plan } label: {
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(plan.title)
+                            .font(.subheadline.bold())
+                            .strikethrough(plan.isCompleted)
+                        if !plan.note.isEmpty {
+                            Text(plan.note)
+                                .font(.caption)
+                                .foregroundStyle(YJColor.muted)
+                                .lineLimit(3)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(YJColor.muted)
                 }
+                .contentShape(Rectangle())
             }
-            Spacer(minLength: 0)
+            .buttonStyle(.plain)
+            .accessibilityHint("查看完整计划与关联游戏")
         }
         .padding(.vertical, 3)
         .swipeActions {
@@ -1261,6 +1352,245 @@ struct SavedPlansView: View {
                 }
             }
         }
+    }
+}
+
+struct SavedPlanDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Bindable var plan: SavedGamePlan
+    @Query(sort: \GameRecord.title) private var allGames: [GameRecord]
+    @Query private var conversations: [AIConversation]
+    let accountScopeKey: String
+    @State private var isEditing = false
+    @State private var editedTitle = ""
+    @State private var editedNote = ""
+    @State private var editedGameID = ""
+    @State private var selectedGame: GameRecord?
+    @State private var showingSource = false
+    @State private var persistenceError: String?
+
+    private var games: [GameRecord] {
+        allGames.filter { AccountScope.contains(accountScopeKey, platform: $0.platform, accountID: $0.accountID) }
+    }
+    private var linkedGame: GameRecord? { plan.linkedGame(in: games) }
+    private var sourceConversation: AIConversation? {
+        guard let id = UUID(uuidString: plan.sourceConversationID) else { return nil }
+        return conversations.first { $0.id == id && $0.accountScopeKey == accountScopeKey }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label(plan.isCompleted ? "已完成计划" : "待玩与重温", systemImage: plan.isCompleted ? "checkmark.circle.fill" : "bookmark.fill")
+                            .eyebrowStyle().foregroundStyle(YJColor.lime)
+                        Text(plan.title).font(.title2.bold()).foregroundStyle(YJColor.ink)
+                            .textSelection(.enabled)
+                        Text("加入于 \(plan.createdAt.formatted(.dateTime.year().month().day()))")
+                            .font(.caption).foregroundStyle(YJColor.muted)
+                        if !plan.note.isEmpty {
+                            Text(plan.note).font(.body).lineSpacing(6)
+                                .foregroundStyle(YJColor.ink).textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text("还没有补充说明。可以编辑这条计划，记下想玩的理由。")
+                                .font(.subheadline).foregroundStyle(YJColor.muted)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(18).youjiCard()
+
+                    gameActions
+
+                    if let sourceConversation {
+                        Button { showingSource = true } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(YJColor.purple)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("回到来源对话").font(.subheadline.bold())
+                                    Text(sourceConversation.title).font(.caption).foregroundStyle(YJColor.muted)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.caption)
+                            }
+                            .padding(18).youjiCard()
+                        }
+                        .buttonStyle(.plain)
+                    } else if !plan.sourceConversationID.isEmpty {
+                        Text("来源对话已移除，保存的文字仍可完整查看。")
+                            .font(.caption).foregroundStyle(YJColor.muted)
+                    }
+
+                    Button(plan.isCompleted ? "重新加入待行动" : "标记计划已完成") { toggleCompletion() }
+                        .font(.subheadline.bold()).frame(maxWidth: .infinity).padding(.vertical, 10)
+                }
+                .padding(18)
+            }
+            .background(YJColor.paper)
+            .navigationTitle("计划详情")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button("编辑") { beginEditing() } }
+            }
+            .sheet(isPresented: $isEditing) { editor }
+            .sheet(item: $selectedGame) { game in
+                GameDetailView(game: game, accountScopeKey: accountScopeKey)
+            }
+            .sheet(isPresented: $showingSource) {
+                if let sourceConversation {
+                    NavigationStack {
+                        AIChatView(conversation: sourceConversation)
+                            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("完成") { showingSource = false } } }
+                    }
+                }
+            }
+            .alert("本地保存失败", isPresented: Binding(
+                get: { persistenceError != nil }, set: { if !$0 { persistenceError = nil } }
+            )) { Button("知道了", role: .cancel) {} } message: { Text(persistenceError ?? "") }
+        }
+    }
+
+    private var gameActions: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("GAME / 关联游戏").eyebrowStyle()
+            if let game = linkedGame {
+                Button { selectedGame = game } label: {
+                    HStack(spacing: 12) {
+                        CachedCoverImage(urlString: game.imageURL).frame(width: 52, height: 66)
+                            .clipped().clipShape(RoundedRectangle(cornerRadius: 9))
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(game.title).font(.subheadline.bold()).foregroundStyle(YJColor.ink)
+                            Text("\(game.platform.shortName) · \(game.playStatus.rawValue)")
+                                .font(.caption).foregroundStyle(YJColor.muted)
+                            Text("查看游戏档案").font(.caption.bold()).foregroundStyle(YJColor.lime)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.caption)
+                    }
+                }
+                .buttonStyle(.plain)
+                Button {
+                    do { try ProductDataService.startPlan(plan.id, accountScopeKey: accountScopeKey, modelContext: modelContext) }
+                    catch { persistenceError = error.localizedDescription }
+                } label: {
+                    Label(game.playStatus == .playing && plan.isCompleted ? "已开始这款游戏" : "开始这款", systemImage: "play.fill")
+                        .frame(maxWidth: .infinity).padding(.vertical, 12)
+                }
+                .buttonStyle(YJPrimaryButtonStyle())
+                .disabled(game.playStatus == .playing && plan.isCompleted)
+                Text("点按后将游戏标记为“正在玩”，并完成这条待玩计划。")
+                    .font(.caption).foregroundStyle(YJColor.muted)
+            } else {
+                Text(plan.gameID.isEmpty ? "关联本地游戏后，可以直接查看档案、标记开始游玩。也可以保留为纯文字计划。" : "原关联游戏已不在此账号档案中。文字仍保留，可以重新选择游戏。")
+                    .font(.subheadline).foregroundStyle(YJColor.muted)
+                Button("选择关联游戏") { beginEditing() }
+                    .font(.subheadline.bold()).foregroundStyle(YJColor.lime)
+            }
+        }
+        .padding(18).youjiCard()
+    }
+
+    private var editor: some View {
+        NavigationStack {
+            Form {
+                Section("计划标题") { TextField("游戏名称或计划", text: $editedTitle) }
+                Section("完整说明") {
+                    TextEditor(text: $editedNote).frame(minHeight: 220)
+                }
+                Section {
+                    NavigationLink {
+                        PlanGamePicker(games: games, selectedID: $editedGameID)
+                    } label: {
+                        LabeledContent("关联游戏", value: games.first { $0.applicationID == editedGameID }?.title ?? (editedGameID.isEmpty ? "不关联" : "原游戏已移除"))
+                    }
+                } footer: { Text("只显示当前账号档案中的游戏，包含游戏库中隐藏的记录。") }
+                if let persistenceError {
+                    Section { Text(persistenceError).foregroundStyle(YJColor.coral) }
+                }
+            }
+            .navigationTitle("编辑计划").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("取消") { isEditing = false } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("保存") {
+                        do {
+                            try ProductDataService.updatePlan(plan.id, accountScopeKey: accountScopeKey,
+                                title: editedTitle, note: editedNote, gameID: editedGameID, modelContext: modelContext)
+                            isEditing = false
+                        } catch { persistenceError = error.localizedDescription }
+                    }
+                    .disabled(editedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+
+    private func beginEditing() {
+        editedTitle = plan.title
+        editedNote = plan.note
+        editedGameID = plan.gameID
+        persistenceError = nil
+        isEditing = true
+    }
+
+    private func toggleCompletion() {
+        let id = plan.id
+        do {
+            try LocalPersistence.transaction(modelContext) { writer in
+                guard let stored = try writer.fetch(FetchDescriptor<SavedGamePlan>(predicate: #Predicate { $0.id == id })).first,
+                      stored.accountScopeKey == accountScopeKey else { throw CancellationError() }
+                stored.isCompleted.toggle()
+                stored.updatedAt = .now
+            }
+        } catch { persistenceError = error.localizedDescription }
+    }
+}
+
+private struct PlanGamePicker: View {
+    @Environment(\.dismiss) private var dismiss
+    let games: [GameRecord]
+    @Binding var selectedID: String
+    @State private var search = ""
+
+    private var filteredGames: [GameRecord] {
+        games.filter { search.isEmpty || $0.title.localizedStandardContains(search) }
+    }
+
+    var body: some View {
+        List {
+            Button {
+                selectedID = ""
+                dismiss()
+            } label: {
+                HStack {
+                    Text("不关联，保留文字计划")
+                    Spacer()
+                    if selectedID.isEmpty { Image(systemName: "checkmark") }
+                }
+            }
+            if games.isEmpty {
+                Text("当前档案中还没有游戏；同步后可在这里关联。")
+                    .font(.subheadline).foregroundStyle(YJColor.muted)
+            }
+            ForEach(filteredGames) { game in
+                Button {
+                    selectedID = game.applicationID
+                    dismiss()
+                } label: {
+                    HStack(spacing: 10) {
+                        PlatformBadge(platform: game.platform)
+                        Text(game.title).foregroundStyle(YJColor.ink)
+                        Spacer(minLength: 0)
+                        if selectedID == game.applicationID { Image(systemName: "checkmark") }
+                    }
+                }
+            }
+        }
+        .searchable(text: $search, prompt: "搜索游戏名称")
+        .navigationTitle("关联游戏").navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -1299,7 +1629,7 @@ struct AIProfileHistoryView: View {
                             }
                             Text("\(profile.platformFilter) · > \(profile.minimumHours)h · \(profile.gameCount) 款")
                                 .font(.caption2).foregroundStyle(YJColor.muted)
-                            Text((try? AttributedString(markdown: profile.text)) ?? AttributedString(profile.text))
+                            Text(YJText.markdown(profile.text))
                                 .font(.subheadline)
                                 .lineLimit(expandedProfileIDs.contains(profile.id) ? nil : 6)
                             Button(expandedProfileIDs.contains(profile.id) ? "收起" : "查看全文") {
@@ -1329,6 +1659,8 @@ struct AIProfileHistoryView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(YJColor.paper)
             .navigationTitle("历史游戏人格")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
@@ -1358,7 +1690,7 @@ private struct SharePreviewView: View {
                     Label("分享人格图片", systemImage: "square.and.arrow.up")
                         .font(.headline).frame(maxWidth: .infinity).padding(14)
                 }
-                .buttonStyle(.plain).foregroundStyle(.white).background(YJColor.ink, in: RoundedRectangle(cornerRadius: 15))
+                .buttonStyle(YJPrimaryButtonStyle())
             }
             .padding(18)
             .background(YJColor.paper.ignoresSafeArea())
@@ -1423,6 +1755,8 @@ struct DataManagementView: View {
                 Text("会删除这台设备上的所有游迹内容，但不会断开游戏平台账号。建议先导出完整备份。")
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(YJColor.paper)
         .navigationTitle("数据管理")
         .fileExporter(
             isPresented: $isExporting,
@@ -1502,6 +1836,8 @@ struct PrivacyInfoView: View {
                 Link("查看完整隐私政策", destination: URL(string: "https://github.com/06wj/youji-ios/blob/main/docs/PRIVACY_POLICY.md")!)
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(YJColor.paper)
         .navigationTitle("数据与隐私")
         .navigationBarTitleDisplayMode(.inline)
     }

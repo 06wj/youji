@@ -12,6 +12,60 @@ struct PlatformSyncReceipt: Codable, Equatable, Identifiable {
     let trophyFailures: Int
 }
 
+struct PlatformSyncProgress: Equatable {
+    let platform: GamePlatform
+    let title: String
+    let detail: String
+    var completed: Int? = nil
+    var total: Int? = nil
+    var gameListSaved = false
+}
+
+struct PlatformSyncIssue: Equatable, Identifiable {
+    enum Recovery: Equatable { case reconnect, retry }
+
+    var id: String { "\(platform.rawValue)-\(message)" }
+    let platform: GamePlatform
+    let message: String
+    let recovery: Recovery
+    var isPartialSuccess = false
+
+    var actionTitle: String {
+        recovery == .reconnect ? "重新连接 \(platform.shortName)" : "重试 \(platform.shortName) 同步"
+    }
+
+    /// Only controlled copy reaches UI and diagnostics; server payloads may contain credentials.
+    static func from(_ error: Error, platform: GamePlatform, gameListSaved: Bool = false) -> PlatformSyncIssue {
+        var recovery: Recovery = .retry
+        let reason: String
+        switch error {
+        case PlayStationSyncError.invalidNPSSO, PlayStationSyncError.missingAccountIdentity:
+            recovery = .reconnect
+            reason = "未能确认 PlayStation 登录，请重新完成连接。"
+        case PlayStationSyncError.authenticationExpired, PlayStationSyncError.http(401, _), PlayStationSyncError.http(403, _):
+            recovery = .reconnect
+            reason = "PlayStation 登录已过期，请重新连接。"
+        case NintendoSyncError.authenticationExpired, NintendoSyncError.http(401, _), NintendoSyncError.http(403, _):
+            recovery = .reconnect
+            reason = "Nintendo 登录已过期，请重新连接。"
+        case is NintendoAuthError:
+            recovery = .reconnect
+            reason = "未能完成 Nintendo 登录，请重新连接。"
+        case PlayStationSyncError.decode, NintendoSyncError.decode, PlayStationSyncError.incompletePagination:
+            reason = "平台暂未返回完整记录，请稍后重试。"
+        case is URLError:
+            reason = "暂时无法连接 \(platform.shortName)，请检查网络后重试。"
+        case is KeychainError:
+            reason = "登录信息未能保存到这台设备，请稍后重试连接。"
+            recovery = .reconnect
+        default:
+            reason = "\(platform.shortName) 暂时无法完成同步，请稍后重试。"
+        }
+        let retained = gameListSaved ? "已读取的游戏记录已保存。" : "本机已有的游戏记录会保留。"
+        return PlatformSyncIssue(platform: platform, message: reason + retained, recovery: recovery, isPartialSuccess: gameListSaved)
+    }
+}
+
 @MainActor
 final class SyncCoordinator: ObservableObject {
     @Published var isSyncing = false
@@ -49,20 +103,50 @@ final class SyncCoordinator: ObservableObject {
         allowLegacy: true
     )
     @Published var errorMessage: String?
+    @Published private(set) var syncProgress: PlatformSyncProgress?
+    @Published private(set) var syncIssue: PlatformSyncIssue?
+    @Published private var platformIssues: [GamePlatform: PlatformSyncIssue] = [:]
 
     private let nintendoAPI: NintendoAPIClient
     private let playStationAPI: PlayStationAPIClient
+    private let credentialWriter: (String, String) throws -> Void
     private var activeRevision: UUID?
 
-    init(nintendoAPI: NintendoAPIClient = NintendoAPIClient(), playStationAPI: PlayStationAPIClient = PlayStationAPIClient()) {
+    init(
+        nintendoAPI: NintendoAPIClient = NintendoAPIClient(),
+        playStationAPI: PlayStationAPIClient = PlayStationAPIClient(),
+        credentialWriter: @escaping (String, String) throws -> Void = { try KeychainStore.save($0, account: $1) }
+    ) {
         self.nintendoAPI = nintendoAPI
         self.playStationAPI = playStationAPI
+        self.credentialWriter = credentialWriter
     }
 
-    private func beginSync() throws -> UUID {
+    func issue(for platform: GamePlatform) -> PlatformSyncIssue? { platformIssues[platform] }
+
+    func clearIssue(for platform: GamePlatform) {
+        platformIssues[platform] = nil
+        if syncIssue?.platform == platform { syncIssue = nil }
+        errorMessage = nil
+    }
+
+    private func setIssue(_ issue: PlatformSyncIssue, presentsAlert: Bool = true) {
+        platformIssues[issue.platform] = issue
+        syncIssue = issue
+        errorMessage = presentsAlert ? issue.message : nil
+        UserDefaults.standard.set(issue.message, forKey: Keys.lastSyncError)
+    }
+
+    private func beginSync(platform: GamePlatform, authorizing: Bool = false) throws -> UUID {
         guard !isSyncing || activeRevision != LocalDataRevision.current else { throw SyncStateError.alreadySyncing }
+        clearIssue(for: platform)
         activeRevision = LocalDataRevision.current
         isSyncing = true
+        syncProgress = PlatformSyncProgress(
+            platform: platform,
+            title: authorizing ? "正在确认登录" : "正在连接 \(platform.shortName)",
+            detail: "本机已有的游戏记录会保留。"
+        )
         return LocalDataRevision.current
     }
 
@@ -70,6 +154,7 @@ final class SyncCoordinator: ObservableObject {
         guard activeRevision == revision else { return }
         activeRevision = nil
         isSyncing = false
+        syncProgress = nil
     }
 
     var connectedPlatformCount: Int {
@@ -97,13 +182,14 @@ final class SyncCoordinator: ObservableObject {
     }
 
     func finishAuthorization(code: String, verifier: String, modelContext: ModelContext) async {
-        await performSync { revision in
+        await performSync(platform: .switchConsole) { revision in
             let statesBeforeAuthorization = libraryStates(platform: .switchConsole, modelContext: modelContext)
             let token = try await nintendoAPI.exchangeSessionToken(code: code, verifier: verifier)
             try LocalDataRevision.check(revision)
+            syncProgress = PlatformSyncProgress(platform: .switchConsole, title: "正在读取游戏库", detail: "正在读取总时长和最近 7 天的游玩记录。")
             let payload = try await nintendoAPI.loadLibrary(sessionToken: token)
             try LocalDataRevision.check(revision)
-            try KeychainStore.save(token, account: Keys.nintendoToken)
+            try credentialWriter(token, Keys.nintendoToken)
             isNintendoConnected = true
             selectNintendoIdentity(payload.user)
             try await loadNintendo(modelContext: modelContext, token: token, loadedPayload: payload, revision: revision)
@@ -114,13 +200,14 @@ final class SyncCoordinator: ObservableObject {
     }
 
     func finishPlayStationAuthorization(npsso: String, modelContext: ModelContext) async {
-        await performSync { revision in
+        await performSync(platform: .playStation) { revision in
             let statesBeforeAuthorization = libraryStates(platform: .playStation, modelContext: modelContext)
             let tokens = try await playStationAPI.authorize(npsso: npsso)
             try LocalDataRevision.check(revision)
+            syncProgress = PlatformSyncProgress(platform: .playStation, title: "正在读取游戏库", detail: "游戏较多时需要稍等片刻，之后会补全奖杯。")
             let payload = try await playStationAPI.loadGames(accessToken: tokens.accessToken)
             try LocalDataRevision.check(revision)
-            try KeychainStore.save(tokens.refreshToken, account: Keys.playStationRefreshToken)
+            try credentialWriter(tokens.refreshToken, Keys.playStationRefreshToken)
             isPlayStationConnected = true
             selectPlayStationIdentity(payload)
             let trophyFailures = try await loadPlayStation(
@@ -138,9 +225,10 @@ final class SyncCoordinator: ObservableObject {
     func syncNintendo(modelContext: ModelContext) async throws {
         guard let token = KeychainStore.read(account: Keys.nintendoToken) else {
             isNintendoConnected = false
+            reportConnectionError(NintendoAuthError.missingCode, platform: .switchConsole)
             throw NintendoAuthError.missingCode
         }
-        let revision = try beginSync()
+        let revision = try beginSync(platform: .switchConsole)
         defer { finishSync(revision) }
         do {
             let before = libraryState(platform: .switchConsole, accountID: currentNintendoAccountID, modelContext: modelContext)
@@ -160,17 +248,19 @@ final class SyncCoordinator: ObservableObject {
     func syncPlayStation(modelContext: ModelContext) async throws {
         guard let refreshToken = KeychainStore.read(account: Keys.playStationRefreshToken) else {
             isPlayStationConnected = false
+            reportConnectionError(PlayStationSyncError.invalidNPSSO, platform: .playStation)
             throw PlayStationSyncError.invalidNPSSO
         }
-        let revision = try beginSync()
+        let revision = try beginSync(platform: .playStation)
         defer { finishSync(revision) }
         do {
             let before = libraryState(platform: .playStation, accountID: currentPlayStationAccountID, modelContext: modelContext)
             let tokens = try await playStationAPI.refresh(refreshToken: refreshToken)
             try LocalDataRevision.check(revision)
+            syncProgress = PlatformSyncProgress(platform: .playStation, title: "正在读取游戏库", detail: "正在更新游戏名称、时长和最近游玩。")
             let payload = try await playStationAPI.loadGames(accessToken: tokens.accessToken)
             try LocalDataRevision.check(revision)
-            try KeychainStore.save(tokens.refreshToken, account: Keys.playStationRefreshToken)
+            try credentialWriter(tokens.refreshToken, Keys.playStationRefreshToken)
             selectPlayStationIdentity(payload)
             let trophyFailures = try await loadPlayStation(
                 modelContext: modelContext,
@@ -181,7 +271,7 @@ final class SyncCoordinator: ObservableObject {
             try LocalDataRevision.check(revision)
             completeReceipt(platform: .playStation, before: before, trophyFailures: trophyFailures, modelContext: modelContext)
             errorMessage = nil
-            UserDefaults.standard.removeObject(forKey: Keys.lastSyncError)
+            if issue(for: .playStation) == nil { UserDefaults.standard.removeObject(forKey: Keys.lastSyncError) }
         } catch {
             try LocalDataRevision.check(revision)
             if error is CancellationError { throw error }
@@ -199,21 +289,25 @@ final class SyncCoordinator: ObservableObject {
 
         if shouldSyncNintendo {
             do { try await syncNintendo(modelContext: modelContext) }
-            catch { failures.append("Switch：\(error.localizedDescription)") }
+            catch { failures.append(issue(for: .switchConsole)?.message ?? "Switch 暂时无法同步，请重试。") }
         }
         guard revision == LocalDataRevision.current else { return }
         if shouldSyncPlayStation {
             do { try await syncPlayStation(modelContext: modelContext) }
-            catch { failures.append("PlayStation：\(error.localizedDescription)") }
+            catch { failures.append(issue(for: .playStation)?.message ?? "PlayStation 暂时无法同步，请重试。") }
         }
         guard revision == LocalDataRevision.current else { return }
         errorMessage = failures.isEmpty ? nil : failures.joined(separator: "\n")
     }
 
     func disconnectNintendo(invalidatePendingWork: Bool = true) {
-        if invalidatePendingWork { LocalDataRevision.invalidate() }
+        if invalidatePendingWork {
+            LocalDataRevision.invalidate()
+            clearIssue(for: .switchConsole)
+        }
         activeRevision = nil
         isSyncing = false
+        syncProgress = nil
         KeychainStore.delete(account: Keys.nintendoToken)
         isNintendoConnected = false
         nintendoAccountName = ""
@@ -225,9 +319,13 @@ final class SyncCoordinator: ObservableObject {
     }
 
     func disconnectPlayStation(invalidatePendingWork: Bool = true) {
-        if invalidatePendingWork { LocalDataRevision.invalidate() }
+        if invalidatePendingWork {
+            LocalDataRevision.invalidate()
+            clearIssue(for: .playStation)
+        }
         activeRevision = nil
         isSyncing = false
+        syncProgress = nil
         KeychainStore.delete(account: Keys.playStationRefreshToken)
         isPlayStationConnected = false
         playStationAccountName = ""
@@ -242,6 +340,9 @@ final class SyncCoordinator: ObservableObject {
     func resetNonCredentialState() {
         activeRevision = nil
         isSyncing = false
+        syncProgress = nil
+        syncIssue = nil
+        platformIssues = [:]
         Self.clearStoredNonCredentialState()
         currentNintendoAccountID = ""
         currentPlayStationAccountID = ""
@@ -296,7 +397,9 @@ final class SyncCoordinator: ObservableObject {
                 var existingIDs = Set(try modelContext.fetch(activityDescriptor).map(\.activityID))
 
                 for game in switchGames {
-                    let referenceDay = Calendar.current.startOfDay(for: game.updatedAt)
+                    // Legacy arrays do not identify their original time zone or calendar day.
+                    // Keep existing daily records, but never guess dates from updatedAt.
+                    guard let referenceDay = DailyPlayActivity.date(fromDayKey: game.weeklyEndingDayKey) else { continue }
                     for (index, minutes) in game.weeklyMinutes.prefix(7).enumerated() where minutes > 0 {
                         guard let day = Calendar.current.date(
                             byAdding: .day,
@@ -328,21 +431,21 @@ final class SyncCoordinator: ObservableObject {
         }
     }
 
-    private func performSync(_ operation: (UUID) async throws -> Void) async {
+    private func performSync(platform: GamePlatform, _ operation: (UUID) async throws -> Void) async {
         guard !isSyncing || activeRevision != LocalDataRevision.current else { return }
         // A newly authorized account supersedes pending AI requests for the old scope.
         LocalDataRevision.invalidate()
-        guard let revision = try? beginSync() else { return }
+        guard let revision = try? beginSync(platform: platform, authorizing: true) else { return }
         defer { finishSync(revision) }
         do {
             try await operation(revision)
             try LocalDataRevision.check(revision)
             errorMessage = nil
-            UserDefaults.standard.removeObject(forKey: Keys.lastSyncError)
+            if issue(for: platform) == nil { UserDefaults.standard.removeObject(forKey: Keys.lastSyncError) }
         } catch {
             guard revision == LocalDataRevision.current, !(error is CancellationError) else { return }
-            errorMessage = error.localizedDescription
-            UserDefaults.standard.set(errorMessage, forKey: Keys.lastSyncError)
+            // A failed new sign-in must not discard the previously working credential.
+            handle(error, platform: platform, invalidatesCredential: syncProgress?.gameListSaved == true)
         }
     }
 
@@ -357,12 +460,15 @@ final class SyncCoordinator: ObservableObject {
             if let loadedPayload {
                 payload = loadedPayload
             } else {
+                syncProgress = PlatformSyncProgress(platform: .switchConsole, title: "正在读取游戏库", detail: "正在读取总时长和最近 7 天的游玩记录。")
                 payload = try await nintendoAPI.loadLibrary(sessionToken: token)
             }
             try LocalDataRevision.check(revision)
             guard !payload.user.id.isEmpty else { throw NintendoSyncError.decode("缺少账号身份") }
             selectNintendoIdentity(payload.user)
+            syncProgress = PlatformSyncProgress(platform: .switchConsole, title: "正在保存游玩记录", detail: "已读取 \(payload.games.count) 款游戏，正在保存到这台设备。")
             try upsert(payload.games, platform: .switchConsole, accountID: payload.user.id, preserveTrophies: false, modelContext: modelContext)
+            syncProgress = PlatformSyncProgress(platform: .switchConsole, title: "正在保存每日活动", detail: "已保存 \(payload.games.count) 款游戏，正在整理最近游玩的日期。", gameListSaved: true)
             try upsertDailyActivities(
                 payload.dailyActivities,
                 accountID: payload.user.id,
@@ -373,7 +479,6 @@ final class SyncCoordinator: ObservableObject {
         } catch {
             try LocalDataRevision.check(revision)
             if error is CancellationError { throw error }
-            handle(error, platform: .switchConsole)
             throw error
         }
     }
@@ -394,7 +499,9 @@ final class SyncCoordinator: ObservableObject {
             }
             try LocalDataRevision.check(revision)
             selectPlayStationIdentity(payload)
+            syncProgress = PlatformSyncProgress(platform: .playStation, title: "正在保存游戏库", detail: "已读取 \(payload.games.count) 款游戏，正在保存到这台设备。")
             try upsert(payload.games, platform: .playStation, accountID: payload.accountID, preserveTrophies: true, modelContext: modelContext)
+            syncProgress = PlatformSyncProgress(platform: .playStation, title: "游戏库已保存", detail: "已收录 \(payload.games.count) 款游戏，正在准备奖杯。", gameListSaved: true)
 
             let trophyRecords = try records(
                 platform: .playStation,
@@ -415,11 +522,19 @@ final class SyncCoordinator: ObservableObject {
                 )
             })
 
-            for title in payload.titles {
+            let pendingTitles = payload.titles.filter { title in
+                guard let cached = trophyCache[title.titleID] else { return true }
+                return title.lastPlayedAt.map { cached.syncedAt < $0 } ?? false
+            }
+            var completedTitles = 0
+            syncProgress = PlatformSyncProgress(platform: .playStation, title: "正在补全奖杯", detail: "已保存 \(payload.games.count) 款游戏，可以先浏览。", completed: 0, total: pendingTitles.count, gameListSaved: true)
+            for title in pendingTitles {
                 try LocalDataRevision.check(revision)
-                if let cached = trophyCache[title.titleID],
-                   title.lastPlayedAt == nil || cached.syncedAt >= title.lastPlayedAt! {
-                    continue
+                defer {
+                    if revision == LocalDataRevision.current, activeRevision == revision {
+                        completedTitles += 1
+                        syncProgress = PlatformSyncProgress(platform: .playStation, title: "正在补全奖杯", detail: "已保存 \(payload.games.count) 款游戏，可以先浏览。", completed: completedTitles, total: pendingTitles.count, gameListSaved: true)
+                    }
                 }
                 do {
                     if let update = try await playStationAPI.loadTrophy(
@@ -442,6 +557,7 @@ final class SyncCoordinator: ObservableObject {
                 }
             }
 
+            syncProgress = PlatformSyncProgress(platform: .playStation, title: "正在读取奖杯总览", detail: "游戏库已保存，正在完成最后一步。", completed: completedTitles, total: pendingTitles.count, gameListSaved: true)
             do {
                 let summary = try await playStationAPI.loadTrophySummary(accessToken: accessToken)
                 try LocalDataRevision.check(revision)
@@ -451,6 +567,8 @@ final class SyncCoordinator: ObservableObject {
                 }
             } catch PlayStationSyncError.authenticationExpired {
                 throw PlayStationSyncError.authenticationExpired
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 // Game and per-title trophy data are already durable. Retry the summary next sync.
                 trophyFailures += 1
@@ -459,11 +577,13 @@ final class SyncCoordinator: ObservableObject {
             try LocalDataRevision.check(revision)
             try recordSnapshots(platform: .playStation, accountID: payload.accountID, modelContext: modelContext)
             markSynced(platform: .playStation, accountID: payload.accountID)
+            if trophyFailures > 0 {
+                setIssue(PlatformSyncIssue(platform: .playStation, message: "游戏记录已保存，\(trophyFailures) 项奖杯数据暂未更新。重试会保留已完成的结果。", recovery: .retry, isPartialSuccess: true), presentsAlert: false)
+            }
             return trophyFailures
         } catch {
             try LocalDataRevision.check(revision)
             if error is CancellationError { throw error }
-            handle(error, platform: .playStation)
             throw error
         }
     }
@@ -491,7 +611,8 @@ final class SyncCoordinator: ObservableObject {
                 )
                 guard item.platform == platform, !item.titleID.isEmpty,
                       DataValidation.minutes(item.totalMinutes), item.weeklyMinutes.count == 7,
-                      item.weeklyMinutes.allSatisfy(DataValidation.minutes) else {
+                      item.weeklyMinutes.allSatisfy(DataValidation.minutes),
+                      item.weeklyEndingDayKey.map({ DailyPlayActivity.date(fromDayKey: $0) != nil }) ?? true else {
                     throw ProductDataError.invalidBackup("平台游戏数据不完整")
                 }
                 // Freeze a legacy customization timestamp before advancing platform freshness.
@@ -505,6 +626,7 @@ final class SyncCoordinator: ObservableObject {
                 record.firstPlayedAt = item.firstPlayedAt ?? record.firstPlayedAt
                 record.lastPlayedAt = item.lastPlayedAt ?? record.lastPlayedAt
                 record.weeklyMinutes = item.weeklyMinutes
+                record.weeklyEndingDayKey = item.platform == .switchConsole ? item.weeklyEndingDayKey ?? "" : ""
                 if !preserveTrophies {
                     record.trophiesEarned = item.trophiesEarned
                     record.trophiesDefined = item.trophiesDefined
@@ -783,19 +905,29 @@ final class SyncCoordinator: ObservableObject {
         return legacy
     }
 
-    private func handle(_ error: Error, platform: GamePlatform) {
-        switch platform {
-        case .switchConsole:
-            if case NintendoSyncError.authenticationExpired = error {
+    func reportConnectionError(_ error: Error, platform: GamePlatform) {
+        setIssue(PlatformSyncIssue.from(error, platform: platform))
+    }
+
+    private func handle(_ error: Error, platform: GamePlatform, invalidatesCredential: Bool = true) {
+        let issue = PlatformSyncIssue.from(error, platform: platform, gameListSaved: syncProgress?.gameListSaved == true)
+        let authenticationExpired: Bool
+        switch error {
+        case PlayStationSyncError.authenticationExpired, PlayStationSyncError.http(401, _), PlayStationSyncError.http(403, _),
+             NintendoSyncError.authenticationExpired, NintendoSyncError.http(401, _), NintendoSyncError.http(403, _):
+            authenticationExpired = true
+        default:
+            authenticationExpired = false
+        }
+        if authenticationExpired && invalidatesCredential {
+            switch platform {
+            case .switchConsole:
                 disconnectNintendo(invalidatePendingWork: false)
-            }
-        case .playStation:
-            if case PlayStationSyncError.authenticationExpired = error {
+            case .playStation:
                 disconnectPlayStation(invalidatePendingWork: false)
             }
         }
-        errorMessage = error.localizedDescription
-        UserDefaults.standard.set(errorMessage, forKey: Keys.lastSyncError)
+        setIssue(issue)
     }
 
     private enum Keys {

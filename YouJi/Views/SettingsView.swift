@@ -6,6 +6,10 @@ struct SettingsView: View {
     @State private var apiKey: String
     @State private var modelName: String
     @State private var endpoint: String
+    @State private var servicePreset: AIServicePreset
+    @State private var showsAdvanced: Bool
+    @State private var testTask: Task<Void, Never>?
+    @State private var connectionSucceeded = false
     @State private var saved = false
     @State private var errorMessage: String?
     @State private var isTesting = false
@@ -13,13 +17,18 @@ struct SettingsView: View {
     @State private var reminderEnabled = UserDefaults.standard.bool(forKey: "weekly-sync-reminder-enabled")
     let sync: SyncCoordinator?
     let prioritizesAIConfiguration: Bool
+    let onConfigured: (() -> Void)?
 
-    init(sync: SyncCoordinator? = nil, prioritizesAIConfiguration: Bool = false) {
+    init(sync: SyncCoordinator? = nil, prioritizesAIConfiguration: Bool = false, onConfigured: (() -> Void)? = nil) {
         self.sync = sync
         self.prioritizesAIConfiguration = prioritizesAIConfiguration
+        self.onConfigured = onConfigured
         _apiKey = State(initialValue: AISettingsStore.apiKey)
         _modelName = State(initialValue: AISettingsStore.modelName)
         _endpoint = State(initialValue: AISettingsStore.endpointString)
+        let usesPreset = AISettingsStore.endpointString == AISettingsStore.defaultEndpoint
+        _servicePreset = State(initialValue: usesPreset ? .celitech : .custom)
+        _showsAdvanced = State(initialValue: !usesPreset || AISettingsStore.modelName != AISettingsStore.defaultModelName)
     }
 
     var body: some View {
@@ -56,20 +65,27 @@ struct SettingsView: View {
             .alert("AI 服务", isPresented: Binding(
                 get: { connectionMessage != nil },
                 set: { if !$0 { connectionMessage = nil } }
-            )) { Button("知道了", role: .cancel) {} } message: { Text(connectionMessage ?? "") }
+            )) {
+                if connectionSucceeded && prioritizesAIConfiguration {
+                    Button("返回继续") { finishConfiguration() }
+                } else {
+                    Button("知道了", role: .cancel) {}
+                }
+            } message: { Text(connectionMessage ?? "") }
+            .onDisappear { testTask?.cancel() }
         }
     }
 
     private var intro: some View {
         HStack(spacing: 14) {
             Image(systemName: prioritizesAIConfiguration ? "sparkles" : "slider.horizontal.3")
-                .font(.title2.bold()).foregroundStyle(.white)
+                .font(.title2.bold()).foregroundStyle(YJColor.lime)
                 .frame(width: 52, height: 52)
-                .background(YJColor.purple, in: RoundedRectangle(cornerRadius: 16))
+                .background(YJColor.lime.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
             VStack(alignment: .leading, spacing: 4) {
                 Text(prioritizesAIConfiguration ? "配置游戏大脑" : "管理游迹").font(.headline)
                 Text(prioritizesAIConfiguration
-                     ? "使用你自己的模型配置分析筛选后的本地游戏记录。"
+                     ? "选好服务、填写密钥，保存后回到刚才的任务。"
                      : "管理同步提醒、本地数据、隐私与 AI 服务。")
                     .font(.caption).foregroundStyle(YJColor.muted)
             }
@@ -85,69 +101,103 @@ struct SettingsView: View {
                 .font(.system(size: 9, weight: .black, design: .monospaced))
                 .tracking(1.2).foregroundStyle(YJColor.muted)
 
+            Picker("选择服务", selection: $servicePreset) {
+                ForEach(AIServicePreset.allCases, id: \.self) { preset in
+                    Text(preset.rawValue).tag(preset)
+                }
+            }
+            .tint(YJColor.lime).disabled(isTesting)
+            .onChange(of: servicePreset) { _, value in
+                saved = false
+                if value == .celitech {
+                    if endpoint != AISettingsStore.defaultEndpoint { apiKey = "" }
+                    endpoint = AISettingsStore.defaultEndpoint
+                    modelName = AISettingsStore.defaultModelName
+                } else {
+                    showsAdvanced = true
+                }
+            }
+
+            Text(servicePreset == .celitech
+                 ? "已填好现有服务预设。你需要该服务自己的 API Key；账户和用量由服务商管理。"
+                 : "使用你自己的 HTTPS Chat Completions 兼容服务，填写完整接口地址及模型名称。")
+                .font(.caption).foregroundStyle(YJColor.muted).lineSpacing(3)
+
             VStack(alignment: .leading, spacing: 7) {
                 Text("API Key").font(.caption.bold()).foregroundStyle(YJColor.muted)
-                SecureField("sk-…", text: $apiKey)
+                SecureField("粘贴所选服务的 API Key", text: $apiKey)
+                    .disabled(isTesting)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .padding(13).background(YJColor.paper, in: RoundedRectangle(cornerRadius: 12))
-            }
-
-            VStack(alignment: .leading, spacing: 7) {
-                Text("接口地址").font(.caption.bold()).foregroundStyle(YJColor.muted)
-                TextField(AISettingsStore.defaultEndpoint, text: $endpoint)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .padding(13).background(YJColor.paper, in: RoundedRectangle(cornerRadius: 12))
-                Text(endpoint == AISettingsStore.defaultEndpoint ? "当前使用策量智算的 OpenAI 兼容接口。" : "当前使用你填写的 OpenAI Chat Completions 兼容接口。")
+                Text("只存入这台设备的系统钥匙串，不随备份导出。")
                     .font(.caption2).foregroundStyle(YJColor.muted)
             }
 
-            VStack(alignment: .leading, spacing: 7) {
-                Text("模型名称").font(.caption.bold()).foregroundStyle(YJColor.muted)
-                TextField(AISettingsStore.defaultModelName, text: $modelName)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .padding(13).background(YJColor.paper, in: RoundedRectangle(cornerRadius: 12))
-                Text("必须使用服务支持的标准模型名称。")
+            DisclosureGroup("接口与模型（高级）", isExpanded: $showsAdvanced) {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("完整接口地址").font(.caption.bold()).foregroundStyle(YJColor.muted)
+                        TextField(AISettingsStore.defaultEndpoint, text: $endpoint, axis: .vertical)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled().keyboardType(.URL)
+                            .padding(13).background(YJColor.paper, in: RoundedRectangle(cornerRadius: 12))
+                        Text("通常以 /v1/chat/completions 结尾；不要只填写网站首页，也不要把密钥放在地址中。")
+                            .font(.caption2).foregroundStyle(YJColor.muted)
+                    }
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("模型名称").font(.caption.bold()).foregroundStyle(YJColor.muted)
+                        TextField(AISettingsStore.defaultModelName, text: $modelName)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .padding(13).background(YJColor.paper, in: RoundedRectangle(cornerRadius: 12))
+                        Text("填写服务支持的标准名称，区分大小写。")
+                            .font(.caption2).foregroundStyle(YJColor.muted)
+                    }
+                }.padding(.top, 10)
+            }
+            .font(.subheadline.bold()).disabled(isTesting)
+
+            if let host = URLComponents(string: endpoint)?.host {
+                Text("发送至 \(host) · 模型 \(modelName)")
                     .font(.caption2).foregroundStyle(YJColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(spacing: 10) {
+            VStack(spacing: 10) {
                 Button(action: save) {
-                    Label(saved ? "已保存" : "保存配置", systemImage: saved ? "checkmark" : "tray.and.arrow.down")
-                        .frame(maxWidth: .infinity)
+                    Label(saved ? "已保存" : prioritizesAIConfiguration ? "保存并返回" : "保存配置",
+                          systemImage: saved ? "checkmark" : "tray.and.arrow.down")
+                        .frame(maxWidth: .infinity).padding(.vertical, 12)
                 }
-                .buttonStyle(.bordered)
-                .disabled(modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .buttonStyle(YJPrimaryButtonStyle()).disabled(isTesting)
 
                 Button(action: testConnection) {
                     HStack {
                         if isTesting { ProgressView().controlSize(.small) }
-                        Text(isTesting ? "测试中…" : "保存并测试")
+                        Text(isTesting ? "测试中…" : "保存并测试连接")
                     }
                     .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(YJColor.ink)
-                .disabled(isTesting || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .buttonStyle(.bordered).disabled(isTesting)
+                Text("保存配置不会发送游戏数据。测试会向所选服务发送一条简短测试消息，可能消耗少量额度。")
+                    .font(.caption2).foregroundStyle(YJColor.muted)
             }
 
             if !apiKey.isEmpty {
                 Button(role: .destructive) {
-                    do {
-                        try AISettingsStore.save(apiKey: "", modelName: modelName, endpoint: endpoint)
-                        apiKey = ""
-                        saved = true
-                    } catch { errorMessage = error.localizedDescription }
+                    AISettingsStore.clearAPIKey()
+                    apiKey = ""
+                    saved = false
                 } label: {
                     Label("清除这台设备上的 AI API Key", systemImage: "key.slash")
                         .font(.subheadline.bold())
                 }
+                .disabled(isTesting)
             }
-
         }
+        .onChange(of: apiKey) { _, _ in saved = false }
+        .onChange(of: modelName) { _, _ in saved = false }
+        .onChange(of: endpoint) { _, _ in saved = false }
         .padding(17)
         .youjiCard()
     }
@@ -209,36 +259,48 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(YJColor.muted).lineSpacing(3)
         }
         .padding(16)
-        .background(Color.white.opacity(0.5), in: RoundedRectangle(cornerRadius: 16))
+        .background(YJColor.card, in: RoundedRectangle(cornerRadius: 16))
     }
 
     private func save() {
         do {
-            try AISettingsStore.save(apiKey: apiKey, modelName: modelName, endpoint: endpoint)
-            apiKey = AISettingsStore.apiKey
-            modelName = AISettingsStore.modelName
-            endpoint = AISettingsStore.endpointString
+            try persistConfiguration()
             saved = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { saved = false }
+            if prioritizesAIConfiguration { finishConfiguration() }
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
+    private func persistConfiguration() throws {
+        try AISettingsStore.save(apiKey: apiKey, modelName: modelName, endpoint: endpoint)
+        apiKey = AISettingsStore.apiKey
+        modelName = AISettingsStore.modelName
+        endpoint = AISettingsStore.endpointString
+    }
+
+    private func finishConfiguration() {
+        onConfigured?()
+        dismiss()
+    }
+
     private func testConnection() {
-        do {
-            try AISettingsStore.save(apiKey: apiKey, modelName: modelName, endpoint: endpoint)
-        } catch {
+        do { try persistConfiguration() }
+        catch {
             errorMessage = error.localizedDescription
             return
         }
         isTesting = true
-        Task {
+        connectionSucceeded = false
+        testTask = Task {
             defer { isTesting = false }
             do {
                 try await AIAnalysisClient.shared.testConnection(apiKey: AISettingsStore.apiKey, model: AISettingsStore.modelName)
-                connectionMessage = "连接成功，模型配置可以使用。"
+                guard !Task.isCancelled else { return }
+                connectionSucceeded = true
+                connectionMessage = "连接成功。返回后可继续刚才的任务，生成或发送仍由你决定。"
             } catch {
+                guard !Task.isCancelled else { return }
                 connectionMessage = error.localizedDescription
             }
         }

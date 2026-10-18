@@ -12,7 +12,12 @@ struct ConnectPlayStationView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if showBrowser {
+                if let progress = coordinator.syncProgress, progress.platform == .playStation {
+                    ScrollView {
+                        PlatformSyncProgressCard(progress: progress, onBrowse: { dismiss() })
+                            .padding(20)
+                    }
+                } else if showBrowser {
                     PlayStationLoginWebView(credentialRequest: $credentialRequest) { result in
                         switch result {
                         case .success(let npsso):
@@ -21,7 +26,7 @@ struct ConnectPlayStationView: View {
                                 if coordinator.errorMessage == nil { dismiss() }
                             }
                         case .failure(let error):
-                            coordinator.errorMessage = error.localizedDescription
+                            coordinator.reportConnectionError(error, platform: .playStation)
                         }
                     }
                 } else {
@@ -32,40 +37,38 @@ struct ConnectPlayStationView: View {
             .navigationTitle("连接 PlayStation")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("取消") { dismiss() } }
-                if showBrowser {
+                ToolbarItem(placement: .topBarLeading) { Button(coordinator.isSyncing ? "返回游戏库" : "取消") { dismiss() } }
+                if showBrowser && !coordinator.isSyncing {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("登录完成") { credentialRequest += 1 }.fontWeight(.semibold)
                     }
                 }
             }
-            .alert("连接失败", isPresented: Binding(get: { coordinator.errorMessage != nil }, set: { if !$0 { coordinator.errorMessage = nil } })) {
+            .alert("连接尚未完成", isPresented: Binding(get: { coordinator.errorMessage != nil && coordinator.syncIssue?.platform == .playStation }, set: { if !$0 { coordinator.errorMessage = nil } })) {
+                Button(coordinator.issue(for: .playStation)?.recovery == .retry && coordinator.isPlayStationConnected ? "重试同步" : "重新登录") {
+                    if coordinator.issue(for: .playStation)?.recovery == .retry && coordinator.isPlayStationConnected {
+                        Task {
+                            try? await coordinator.syncPlayStation(modelContext: modelContext)
+                            if coordinator.errorMessage == nil { dismiss() }
+                        }
+                    } else {
+                        coordinator.clearIssue(for: .playStation)
+                        showBrowser = false
+                    }
+                }
                 Button("知道了", role: .cancel) {}
             } message: {
                 Text(coordinator.errorMessage ?? "未知错误")
             }
-            .overlay {
-                if coordinator.isSyncing {
-                    ProgressView("正在读取 PlayStation 记录…")
-                        .padding(24)
-                        .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 18))
-                }
-            }
+            .onAppear { coordinator.errorMessage = nil }
         }
     }
 
     private var connectionIntro: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 30).fill(Color(red: 0.02, green: 0.18, blue: 0.48)).frame(height: 215)
-                    Circle().stroke(.white.opacity(0.17), lineWidth: 14).frame(width: 110, height: 110).offset(x: 98, y: -52)
-                    VStack(alignment: .leading, spacing: 12) {
-                        Image(systemName: "playstation.logo").font(.system(size: 42)).foregroundStyle(.white)
-                        Text("PS4 与 PS5 的时光，\n一起放进游迹。")
-                            .font(.system(size: 30, weight: .black, design: .rounded)).foregroundStyle(.white)
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(28)
-                }
+                YJFeatureHeading(eyebrow: "PLAYSTATION / CONNECT", title: "每一座奖杯，\n都有你的故事。",
+                                 subtitle: "把 PS4 与 PS5 的时光，一起放进游迹。", accent: YJColor.playStation)
 
                 VStack(alignment: .leading, spacing: 15) {
                     Label("在 Sony 官方页面完成登录", systemImage: "lock.shield.fill")
@@ -76,7 +79,10 @@ struct ConnectPlayStationView: View {
                 Text("进入页面完成 PlayStation 登录后，点右上角“登录完成”。游迹不会读取或保存你的密码。")
                     .font(.footnote).foregroundStyle(YJColor.muted).lineSpacing(4)
 
-                Button { showBrowser = true } label: {
+                Button {
+                    coordinator.clearIssue(for: .playStation)
+                    showBrowser = true
+                } label: {
                     Label("登录 PlayStation Network", systemImage: "arrow.up.right")
                         .frame(maxWidth: .infinity).padding(.vertical, 15)
                 }
@@ -86,6 +92,38 @@ struct ConnectPlayStationView: View {
                 .background(Color(red: 0.02, green: 0.18, blue: 0.48), in: Capsule())
             }.padding(20)
         }
+    }
+}
+
+struct PlatformSyncProgressCard: View {
+    let progress: PlatformSyncProgress
+    var onBrowse: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label(progress.platform.rawValue, systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption.bold()).foregroundStyle(YJColor.platform(progress.platform))
+            Text(progress.title).font(.title2.bold()).foregroundStyle(YJColor.ink)
+            Text(progress.detail).font(.subheadline).foregroundStyle(YJColor.muted)
+            if let completed = progress.completed, let total = progress.total, total > 0 {
+                ProgressView(value: Double(min(completed, total)), total: Double(total))
+                    .tint(YJColor.platform(progress.platform))
+                    .accessibilityLabel("奖杯处理进度")
+                    .accessibilityValue("已处理 \(completed) 项，共 \(total) 项")
+                Text("奖杯 \(completed) / \(total)")
+                    .font(.caption.monospacedDigit()).foregroundStyle(YJColor.muted)
+            } else {
+                ProgressView().tint(YJColor.platform(progress.platform))
+            }
+            if progress.gameListSaved, let onBrowse {
+                Button("先浏览游戏", action: onBrowse).buttonStyle(YJPrimaryButtonStyle())
+                Text("返回游戏库后，本次导入会继续。")
+                    .font(.caption).foregroundStyle(YJColor.muted)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(22)
+        .youjiCard()
     }
 }
 

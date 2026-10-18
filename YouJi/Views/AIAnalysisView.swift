@@ -20,6 +20,7 @@ struct AIAnalysisView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \AIProfileResult.generatedAt, order: .reverse) private var allProfiles: [AIProfileResult]
+    @Query private var allConversations: [AIConversation]
     let games: [GameRecord]
     let accountScopeKey: String
 
@@ -30,14 +31,28 @@ struct AIAnalysisView: View {
 	@State private var showChat = false
 	@State private var hasAIConfiguration = AISettingsStore.isConfigured
 	@State private var isAnalyzing = false
-	@State private var analysisText = ""
+	@State private var chatDraft: String?
 	@State private var analysisError: String?
 	@State private var copiedAnalysis = false
     @State private var showProfileHistory = false
     @State private var analysisTask: Task<Void, Never>?
     @State private var analysisRequestID: UUID?
+    @State private var restoredProfileScope: String?
 
     private let hourPresets = [1, 2, 10, 50]
+
+    private var currentProfile: AIProfileResult? {
+        AIProfileSelection.latest(in: allProfiles, accountScope: accountScopeKey,
+                                  platform: platform.rawValue, minimumHours: minimumHours)
+    }
+    private var analysisText: String { currentProfile?.text ?? "" }
+    private var profileDataHasChanged: Bool {
+        guard let currentProfile else { return false }
+        if !currentProfile.inputFingerprint.isEmpty {
+            return currentProfile.inputFingerprint != AIGameContext.fingerprint(analysisGames)
+        }
+        return currentProfile.gameCount != filteredGames.count || currentProfile.totalMinutes != filteredMinutes
+    }
 
     private var filteredGames: [GameRecord] {
         games
@@ -95,7 +110,7 @@ struct AIAnalysisView: View {
 				SettingsView(prioritizesAIConfiguration: true)
 			}
 			.sheet(isPresented: $showChat) {
-				AIChatListView(games: games, accountScopeKey: accountScopeKey)
+				AIChatListView(games: games, accountScopeKey: accountScopeKey, initialDraft: chatDraft)
 			}
             .sheet(isPresented: $showProfileHistory) {
                 AIProfileHistoryView(accountScopeKey: accountScopeKey)
@@ -111,6 +126,18 @@ struct AIAnalysisView: View {
 			.onChange(of: platform) { _, _ in resetAnalysis() }
 			.onChange(of: minimumHours) { _, _ in resetAnalysis() }
             .onChange(of: accountScopeKey) { _, _ in resetAnalysis() }
+            .task(id: accountScopeKey) {
+                // Returning to Game Brain restores the latest saved result and its
+                // original scope. Reading local history never triggers a request.
+                guard restoredProfileScope != accountScopeKey else { return }
+                restoredProfileScope = accountScopeKey
+                if let latest = AIProfileSelection.latest(in: allProfiles, accountScope: accountScopeKey),
+                   let savedPlatform = ExportPlatform(rawValue: latest.platformFilter),
+                   hourPresets.contains(latest.minimumHours) {
+                    platform = savedPlatform
+                    minimumHours = latest.minimumHours
+                }
+            }
             .onDisappear { cancelAnalysis() }
         }
     }
@@ -119,38 +146,46 @@ struct AIAnalysisView: View {
 		games.contains { $0.totalMinutes > AIPrompts.chatMinimumMinutes }
 	}
 
+    private var hasChatHistory: Bool {
+        allConversations.contains { $0.accountScopeKey == accountScopeKey }
+    }
+
     private var headerSection: some View {
         VStack(spacing: 13) {
-            HStack(spacing: 14) {
-                Image("BrandIcon")
-                    .resizable().scaledToFill()
-                    .frame(width: 50, height: 50)
-                    .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-				VStack(alignment: .leading, spacing: 3) {
-                    Text("读懂你的游戏习惯")
-						.font(.title3.bold())
-					Text("从游玩记录生成人格，也可以继续聊游戏。")
-						.font(.caption)
-						.foregroundStyle(YJColor.muted)
-						.lineLimit(2)
-                }
-                Spacer(minLength: 0)
+            if profileCount > 0 {
+                HStack(spacing: 12) {
+                    Image(systemName: "sparkles").font(.title2).foregroundStyle(YJColor.lime)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("继续认识你的游戏偏好").font(.headline)
+                        Text("上次的分析已保存，也可以从今天的心情开始聊。")
+                            .font(.caption).foregroundStyle(YJColor.muted)
+                    }
+                    Spacer(minLength: 0)
+                }.padding(18).background(YJArtwork(name: "MemoryCrystal", shade: 0.65)).youjiCard()
+            } else {
+            YJFeatureHeading(
+                eyebrow: "YOUR GAME DNA",
+                title: "每次选择，\n都藏着一个你。",
+                subtitle: "从游戏足迹，发现你的玩家人格。",
+                artwork: "MemoryCrystal"
+            )
+
             }
 
             HStack(spacing: 10) {
-                Button { showChat = true } label: {
+                Button { chatDraft = nil; showChat = true } label: {
                     brainShortcut(
                         title: "游戏聊天",
-                        detail: hasChatGames ? "继续追问" : "暂无可用游戏",
+                        detail: hasChatGames ? "选下一款游戏" : hasChatHistory ? "查看历史对话" : "暂无可用游戏",
                         icon: "bubble.left.and.bubble.right.fill",
-                        foreground: .white,
-                        background: YJColor.ink,
+                        foreground: YJColor.paper,
+                        background: YJColor.lime,
                         showsBorder: false
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(!hasChatGames)
-                .opacity(hasChatGames ? 1 : 0.45)
+                .disabled(!hasChatGames && !hasChatHistory)
+                .opacity(hasChatGames || hasChatHistory ? 1 : 0.45)
 
                 Button { showProfileHistory = true } label: {
                     brainShortcut(
@@ -164,7 +199,28 @@ struct AIAnalysisView: View {
                 }
                 .buttonStyle(.plain)
             }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { scenarioButtons }
+                VStack(alignment: .leading, spacing: 10) { scenarioButtons }
+            }
+            .font(.caption.bold()).buttonStyle(.bordered).tint(YJColor.lime)
+            .disabled(!hasChatGames)
         }
+    }
+
+    @ViewBuilder
+    private var scenarioButtons: some View {
+        Button { openChat(draft: AIPrompts.shortSessionDraft) } label: {
+            Label("今晚只有 30 分钟", systemImage: "moon.stars")
+        }
+        Button { openChat(draft: AIPrompts.replayDraft) } label: {
+            Label("从已有游戏选一款重温", systemImage: "arrow.counterclockwise")
+        }
+    }
+
+    private func openChat(draft: String) {
+        chatDraft = draft
+        showChat = true
     }
 
     private var profileCount: Int {
@@ -190,7 +246,7 @@ struct AIAnalysisView: View {
         .foregroundStyle(foreground)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 15)
         .background(background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             if showsBorder {
@@ -203,11 +259,11 @@ struct AIAnalysisView: View {
 		VStack(alignment: .leading, spacing: 18) {
 			HStack(spacing: 12) {
 				Image(systemName: "sparkles")
-					.font(.headline.bold()).foregroundStyle(.white)
+					.font(.headline.bold()).foregroundStyle(YJColor.lime)
 					.frame(width: 42, height: 42)
-					.background(YJColor.purple, in: RoundedRectangle(cornerRadius: 13))
+					.background(YJColor.lime.opacity(0.1), in: RoundedRectangle(cornerRadius: 13))
 				VStack(alignment: .leading, spacing: 3) {
-					Text("生成游戏人格").font(.headline)
+					Text(currentProfile == nil ? "生成游戏人格" : "最近的人格分析").font(.headline)
 					Text("偏好、投入深度与挑战倾向")
 						.font(.caption).foregroundStyle(YJColor.muted)
 				}
@@ -226,19 +282,14 @@ struct AIAnalysisView: View {
 					if hasAIConfiguration { generateAnalysis() } else { showSettings = true }
 				} label: {
 					HStack(spacing: 8) {
-						if isAnalyzing { ProgressView().tint(.white) }
+						if isAnalyzing { ProgressView().tint(YJColor.paper) }
 						Image(systemName: hasAIConfiguration ? "sparkles" : "key.fill")
 						Text(isAnalyzing ? "正在分析游戏足迹…" : hasAIConfiguration ? "生成游戏人格" : "先配置 AI 服务")
 					}
 					.font(.headline)
 					.frame(maxWidth: .infinity).padding(.vertical, 14)
 				}
-				.buttonStyle(.plain)
-				.foregroundStyle(.white)
-				.background(
-					filteredGames.isEmpty ? YJColor.muted : YJColor.ink,
-					in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-				)
+                .buttonStyle(YJPrimaryButtonStyle())
 				.disabled(filteredGames.isEmpty || isAnalyzing)
 			} else {
 				VStack(alignment: .leading, spacing: 13) {
@@ -248,8 +299,16 @@ struct AIAnalysisView: View {
 					}
 					.font(.caption.bold()).foregroundStyle(YJColor.purple)
 
+                    if let profile = currentProfile {
+                        Text("\(profile.generatedAt.formatted(.dateTime.year().month().day())) · \(profile.platformFilter) · > \(profile.minimumHours)h · \(profile.gameCount) 款")
+                            .font(.caption2).foregroundStyle(YJColor.muted)
+                        if profileDataHasChanged {
+                            Label("游戏记录有变化，可以主动更新人格。", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.caption).foregroundStyle(YJColor.lime)
+                        }
+                    }
 					Text(renderedAnalysis)
-						.font(.system(size: 15, weight: .regular, design: .rounded))
+						.font(.body)
 						.foregroundStyle(YJColor.ink)
 						.lineSpacing(7)
 						.textSelection(.enabled)
@@ -258,7 +317,7 @@ struct AIAnalysisView: View {
 				.padding(16)
 				.background(
 					LinearGradient(
-						colors: [Color.white.opacity(0.92), YJColor.purple.opacity(0.055)],
+						colors: [YJColor.elevated, YJColor.card],
 						startPoint: .topLeading,
 						endPoint: .bottomTrailing
 					),
@@ -278,14 +337,22 @@ struct AIAnalysisView: View {
 						Label(copiedAnalysis ? "已复制" : "复制分析", systemImage: copiedAnalysis ? "checkmark" : "doc.on.doc")
 					}
 					Button(action: generateAnalysis) {
-						Label(isAnalyzing ? "分析中" : "重新生成", systemImage: "arrow.clockwise")
+						Label(isAnalyzing ? "分析中" : "更新人格", systemImage: "arrow.clockwise")
 					}
-					.disabled(isAnalyzing)
+					.disabled(isAnalyzing || filteredGames.isEmpty)
                     ShareLink(item: analysisText) {
                         Label("分享", systemImage: "square.and.arrow.up")
                     }
 				}
-				.font(.caption.bold()).buttonStyle(.bordered).tint(YJColor.ink)
+				.font(.caption.bold()).buttonStyle(.bordered).tint(YJColor.lime)
+                Button { openChat(draft: AIPrompts.profileFollowUpDraft(analysisText)) } label: {
+                    Label("围绕这份分析继续聊", systemImage: "bubble.left.and.bubble.right")
+                        .font(.subheadline.bold())
+                        .frame(maxWidth: .infinity).padding(.vertical, 12)
+                }
+                .buttonStyle(YJPrimaryButtonStyle()).disabled(!hasChatGames)
+                Text("新对话使用当前账号全部游玩超过 1 小时的游戏；分析会放入草稿，点发送才交给 AI。")
+                    .font(.caption2).foregroundStyle(YJColor.muted)
 			}
 
 			Label("仅发送以上游戏的名称、平台、时长与奖杯比例", systemImage: "lock.shield")
@@ -356,13 +423,13 @@ struct AIAnalysisView: View {
 	}
 
 	private var renderedAnalysis: AttributedString {
-		(try? AttributedString(markdown: analysisText)) ?? AttributedString(analysisText)
+		YJText.markdown(analysisText)
 	}
 
     private func generateAnalysis() {
         let apiKey = AISettingsStore.apiKey
         let model = AISettingsStore.modelName
-        guard !apiKey.isEmpty, !model.isEmpty else {
+        guard AISettingsStore.isConfigured else {
             hasAIConfiguration = false
             showSettings = true
             return
@@ -385,7 +452,6 @@ struct AIAnalysisView: View {
                 guard analysisRequestID == requestID else { return }
                 let profile = request.result(text: result)
                 try LocalPersistence.transaction(modelContext) { $0.insert(profile) }
-                analysisText = result
             } catch {
                 guard analysisRequestID == requestID, revision == LocalDataRevision.current,
                       !Task.isCancelled, !(error is CancellationError) else { return }
@@ -403,7 +469,6 @@ struct AIAnalysisView: View {
 
     private func resetAnalysis() {
         cancelAnalysis()
-        analysisText = ""
         analysisError = nil
         copiedAnalysis = false
     }
@@ -426,7 +491,7 @@ struct AIAnalysisView: View {
 						.font(.caption.bold())
 				}
 				.buttonStyle(.bordered)
-				.tint(YJColor.ink)
+				.tint(YJColor.lime)
 				.controlSize(.small)
 				.disabled(previewGames.isEmpty)
             }
@@ -476,19 +541,8 @@ struct AIAnalysisView: View {
                         .padding(.horizontal, 6).padding(.vertical, 3)
                         .background(game.platform == .playStation ? Color.blue : Color.red, in: Capsule())
                     Text(game.title).font(.subheadline.bold()).lineLimit(2)
-                    if game.platinumTrophiesEarned > 0 {
-                        Label("已白金", systemImage: "sparkles")
-                            .font(.system(size: 8, weight: .black))
-                            .foregroundStyle(YJColor.ink)
-                            .padding(.horizontal, 6).padding(.vertical, 3)
-                            .background(
-                                LinearGradient(
-                                    colors: [Color.white, Color(red: 0.62, green: 0.85, blue: 0.98)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                in: Capsule()
-                            )
+                    if game.platform == .playStation, game.platinumTrophiesEarned > 0 {
+                        PlatinumBadge()
                     }
                 }
                 HStack(spacing: 12) {

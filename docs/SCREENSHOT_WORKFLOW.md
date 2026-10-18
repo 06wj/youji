@@ -59,3 +59,14 @@ README 使用同一轮原图：`overview`、`playstation`、`switch`、`ai-analy
 - 不纳入登录授权页、API Key、完整账号 ID、安全诊断或系统通知。
 - 用 `sips -g pixelWidth -g pixelHeight <图片>` 检查未发生缩放。
 - 更新 PRD 的截图日期和页面说明。
+
+
+## 模拟器产品预览（示例数据）
+
+2026-10-19 产品优化的预览使用 Debug 模拟器专用的 `--youji-design-preview`，其数据库只在内存中，文件位于 `docs/screenshots/product/`，与以上真实设备档案分开。不能把这些图片当作真机同步验收。
+
+```bash
+xcrun simctl launch booted com.youji.playlog --youji-design-preview --youji-screenshot-route overview
+```
+
+除原页面外，可使用 `first-run`（空档案连接入口）、`weekly-review`（本地回顾）、`plan-detail`（计划全文）、`ai-draft`（可编辑示例草稿）和 `ai-settings`（配置向导）。只有启用模拟器示例模式的 `ai-draft` 会建立本地示例对话，真实档案的直达入口不会自动创建草稿。真实配置含密钥时不要截图设置页。

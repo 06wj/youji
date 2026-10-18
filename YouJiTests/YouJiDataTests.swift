@@ -638,6 +638,7 @@ final class YouJiDataTests: XCTestCase {
             weeklyMinutes: [0, 0, 0, 0, 0, 30, 45]
         )
         game.updatedAt = syncDay
+        game.weeklyEndingDayKey = "2026-08-13"
         context.insert(game)
         try context.save()
 
