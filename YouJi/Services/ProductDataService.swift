@@ -12,6 +12,7 @@ struct YouJiBackup: Codable {
     let conversations: [BackupConversation]
     let profiles: [BackupProfile]
     let plans: [BackupPlan]
+    var playTimeAllocations: [PlayTimeAllocationValue] = []
 }
 
 struct BackupGame: Codable {
@@ -253,14 +254,15 @@ enum ProductDataService {
             )
         }
         return YouJiBackup(
-            formatVersion: 2,
+            formatVersion: 3,
             createdAt: .now,
             games: games,
             snapshots: snapshots,
             dailyActivities: activities,
             conversations: conversations,
             profiles: profiles,
-            plans: plans
+            plans: plans,
+            playTimeAllocations: try modelContext.fetch(FetchDescriptor<PlayTimeAllocation>()).map { try $0.readValue() }
         )
     }
 
@@ -285,7 +287,7 @@ enum ProductDataService {
             return date
         }
         let backup = try decoder.decode(YouJiBackup.self, from: data)
-        guard (1...2).contains(backup.formatVersion) else { throw ProductDataError.unsupportedBackup }
+        guard (1...3).contains(backup.formatVersion) else { throw ProductDataError.unsupportedBackup }
         try validate(backup, modelContext: modelContext)
         LocalDataRevision.invalidate()
         return try LocalPersistence.transaction(modelContext) { modelContext in
@@ -347,6 +349,17 @@ enum ProductDataService {
                     totalMinutes: item.totalMinutes,
                     trophiesEarned: item.trophiesEarned
                 ))
+            }
+
+            let existingAllocations = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<PlayTimeAllocation>()).map { ($0.allocationID, $0) })
+            for item in backup.playTimeAllocations {
+                if let existing = existingAllocations[item.id] {
+                    if item.updatedAt > (try existing.readValue()).updatedAt {
+                        try existing.replace(with: item)
+                    }
+                } else {
+                    modelContext.insert(try PlayTimeAllocation(item))
+                }
             }
 
             let existingActivities = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<DailyPlayActivity>()).map { ($0.activityID, $0) })
@@ -528,6 +541,10 @@ enum ProductDataService {
                 where activity.platform == platform && activity.accountID == accountID {
                 modelContext.delete(activity)
             }
+            for allocation in try modelContext.fetch(FetchDescriptor<PlayTimeAllocation>())
+                where platform == .playStation && allocation.accountID == accountID {
+                modelContext.delete(allocation)
+            }
             for conversation in try modelContext.fetch(FetchDescriptor<AIConversation>())
                 where AccountScope.contains(conversation.accountScopeKey, platform: platform, accountID: accountID) {
                 modelContext.delete(conversation)
@@ -548,6 +565,7 @@ enum ProductDataService {
         try LocalPersistence.transaction(modelContext) { modelContext in
             for item in try modelContext.fetch(FetchDescriptor<GameRecord>()) { modelContext.delete(item) }
             for item in try modelContext.fetch(FetchDescriptor<PlaySnapshot>()) { modelContext.delete(item) }
+            for item in try modelContext.fetch(FetchDescriptor<PlayTimeAllocation>()) { modelContext.delete(item) }
             for item in try modelContext.fetch(FetchDescriptor<DailyPlayActivity>()) { modelContext.delete(item) }
             for item in try modelContext.fetch(FetchDescriptor<AIConversation>()) { modelContext.delete(item) }
             for item in try modelContext.fetch(FetchDescriptor<AIProfileResult>()) { modelContext.delete(item) }
@@ -634,7 +652,9 @@ enum PlayTimelineBuilder {
     static func entries(
         snapshots: [PlaySnapshot],
         activities: [DailyPlayActivity],
-        includedGameIDs: Set<String>
+        includedGameIDs: Set<String>,
+        allocations: [PlayTimeAllocationValue] = [],
+        calendar: Calendar = .current
     ) -> [PlayTimelineEntry] {
         let relevantActivities = activities.filter {
             includedGameIDs.contains($0.gameID) && $0.totalMinutes > 0
@@ -656,27 +676,15 @@ enum PlayTimelineBuilder {
             includedGameIDs.contains($0.gameID)
                 && ($0.platform == .playStation || !gamesWithDailyActivity.contains($0.gameID))
         }
-        for (gameID, values) in Dictionary(grouping: relevantSnapshots, by: \.gameID) {
-            let sorted = values.sorted { $0.date < $1.date }
-            guard sorted.count >= 2 else { continue }
-            for index in sorted.indices.dropFirst() {
-                let previous = sorted[sorted.index(before: index)]
-                let current = sorted[index]
-                let addedMinutes = max(0, current.totalMinutes - previous.totalMinutes)
-                let addedTrophies = max(0, current.trophiesEarned - previous.trophiesEarned)
-                guard addedMinutes > 0 || addedTrophies > 0 else { continue }
-                result.append(PlayTimelineEntry(
-                    id: "snapshot:\(current.snapshotID)",
-                    gameID: gameID,
-                    date: current.date,
-                    addedMinutes: addedMinutes,
-                    addedTrophies: addedTrophies,
-                    source: .snapshotChange
-                ))
-            }
+        for event in PlayTimeResolver.events(snapshots: relevantSnapshots, allocations: allocations, calendar: calendar) {
+            let minutes = max(0, event.minutes)
+            let trophies = max(0, event.trophies)
+            guard minutes > 0 || trophies > 0 else { continue }
+            result.append(PlayTimelineEntry(id: "event:\(event.id)", gameID: event.gameID, date: event.date,
+                                            addedMinutes: minutes, addedTrophies: trophies,
+                                            source: event.hasDay ? .dailyActivity : .snapshotChange))
         }
 
-        let calendar = Calendar.current
         let dailyResult = Dictionary(grouping: result) { entry in
             "\(entry.gameID):\(Int(calendar.startOfDay(for: entry.date).timeIntervalSinceReferenceDate))"
         }
@@ -702,8 +710,9 @@ enum PlayTimelineBuilder {
 }
 
 enum PlayInsightCalculator {
-    static func insight(snapshots: [PlaySnapshot], since start: Date, now: Date = .now) -> PlayPeriodInsight {
-        let values = contributions(snapshots: snapshots, since: start, now: now)
+    static func insight(snapshots: [PlaySnapshot], since start: Date, now: Date = .now,
+                        allocations: [PlayTimeAllocationValue] = [], calendar: Calendar = .current) -> PlayPeriodInsight {
+        let values = contributions(snapshots: snapshots, since: start, now: now, allocations: allocations, calendar: calendar)
         return PlayPeriodInsight(
             addedMinutes: values.reduce(0) { $0 + $1.addedMinutes },
             addedTrophies: values.reduce(0) { $0 + $1.addedTrophies },
@@ -714,22 +723,18 @@ enum PlayInsightCalculator {
     static func contributions(
         snapshots: [PlaySnapshot],
         since start: Date,
-        now: Date = .now
+        now: Date = .now,
+        allocations: [PlayTimeAllocationValue] = [],
+        calendar: Calendar = .current
     ) -> [PlayGameContribution] {
-        let grouped = Dictionary(grouping: snapshots.filter { $0.date <= now }, by: \.gameID)
-        return grouped.compactMap { gameID, values in
-            let sorted = values.sorted { $0.date < $1.date }
-            guard let latest = sorted.last else { return nil }
-            let baseline = sorted.last(where: { $0.date <= start }) ?? sorted.first
-            guard let baseline else { return nil }
-            let minuteDelta = max(0, latest.totalMinutes - baseline.totalMinutes)
-            let trophyDelta = max(0, latest.trophiesEarned - baseline.trophiesEarned)
+        let events = PlayTimeResolver.events(snapshots: snapshots, allocations: allocations, calendar: calendar).filter {
+            ($0.hasDay ? $0.date >= start : $0.date > start) && $0.date <= now
+        }
+        return Dictionary(grouping: events, by: \.gameID).compactMap { gameID, values in
+            let minuteDelta = max(0, values.reduce(0) { $0 + $1.minutes })
+            let trophyDelta = max(0, values.reduce(0) { $0 + $1.trophies })
             guard minuteDelta > 0 || trophyDelta > 0 else { return nil }
-            return PlayGameContribution(
-                gameID: gameID,
-                addedMinutes: minuteDelta,
-                addedTrophies: trophyDelta
-            )
+            return PlayGameContribution(gameID: gameID, addedMinutes: minuteDelta, addedTrophies: trophyDelta)
         }
         .sorted {
             if $0.addedMinutes != $1.addedMinutes { return $0.addedMinutes > $1.addedMinutes }
@@ -852,7 +857,7 @@ enum ProfileShareCardService {
 
 extension YouJiBackup {
     enum CodingKeys: String, CodingKey {
-        case formatVersion, createdAt, games, snapshots, dailyActivities, conversations, profiles, plans
+        case formatVersion, createdAt, games, snapshots, dailyActivities, conversations, profiles, plans, playTimeAllocations
     }
 
     init(from decoder: Decoder) throws {
@@ -865,6 +870,7 @@ extension YouJiBackup {
         conversations = try values.decodeIfPresent([BackupConversation].self, forKey: .conversations) ?? []
         profiles = try values.decodeIfPresent([BackupProfile].self, forKey: .profiles) ?? []
         plans = try values.decodeIfPresent([BackupPlan].self, forKey: .plans) ?? []
+        playTimeAllocations = try values.decodeIfPresent([PlayTimeAllocationValue].self, forKey: .playTimeAllocations) ?? []
     }
 }
 
@@ -931,6 +937,7 @@ extension ProductDataService {
         try unique(backup.conversations.map(\.id))
         try unique(backup.profiles.map(\.id))
         try unique(backup.plans.map(\.id))
+        try unique(backup.playTimeAllocations.map(\.id))
 
         var identities: [String: BackupIdentity] = [:]
         var dayKeyCalendar = Calendar(identifier: .gregorian)
@@ -978,6 +985,33 @@ extension ProductDataService {
             try require(DailyPlayActivity.date(fromDayKey: dayKey) != nil && item.activityID == "\(item.gameID):\(dayKey)", "每日记录的日期标识不一致")
             try require(DataValidation.minutes(item.totalMinutes), "每日记录时长超出范围")
         }
+        var allocationValues = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<PlayTimeAllocation>()).map {
+            let value = try $0.readValue()
+            return (value.id, value)
+        })
+        for value in backup.playTimeAllocations {
+            try require(identities[value.gameID].map { $0.platform == .playStation && $0.accountID == value.accountID } == true,
+                        "日期分配的游戏归属不一致")
+            if let local = allocationValues[value.id] {
+                try require(local.gameID == value.gameID && local.accountID == value.accountID, "日期分配与本地归属冲突")
+                if value.updatedAt > local.updatedAt { allocationValues[value.id] = value }
+            } else { allocationValues[value.id] = value }
+        }
+        var allocationSnapshots = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<PlaySnapshot>()).map { ($0.snapshotID, $0) })
+        for item in backup.snapshots where allocationSnapshots[item.snapshotID] == nil {
+            allocationSnapshots[item.snapshotID] = PlaySnapshot(snapshotID: item.snapshotID, gameID: item.gameID,
+                accountID: item.accountID, platform: item.platform, date: item.date,
+                totalMinutes: item.totalMinutes, trophiesEarned: item.trophiesEarned)
+        }
+        do {
+            // Validate every incoming record, including older losing revisions, then
+            // check the merged graph so restores cannot double-count overlapping ranges.
+            for value in backup.playTimeAllocations {
+                _ = try PlayTimeResolver.coveredIDs(value, snapshots: Array(allocationSnapshots.values))
+            }
+            try PlayTimeResolver.validate(Array(allocationValues.values), snapshots: Array(allocationSnapshots.values))
+        } catch { throw ProductDataError.invalidBackup(error.localizedDescription) }
+
         for item in backup.conversations {
             try unique(item.messages.map(\.id))
             try require(item.games.allSatisfy { DataValidation.minutes($0.totalMinutes) }, "对话中的时长超出范围")

@@ -41,6 +41,10 @@
 		68FFECB9B06BBCDF913E1504 /* SyncExperienceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBA6142FF6B17CF4C6644331 /* SyncExperienceTests.swift */; };
 		E0F4632177228CA4AC365913 /* AIProductExperienceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3696B96D200E4B7A1AD77F /* AIProductExperienceTests.swift */; };
 		1FCBB763BC6359BA40BAC5F6 /* SavedPlanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D010D87DC8E27AA3C563789 /* SavedPlanTests.swift */; };
+		A10000000000000000000020 /* Models/PlayTimeAllocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020 /* Models/PlayTimeAllocation.swift */; };
+		A10000000000000000000021 /* Services/PlayTimeAllocationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000021 /* Services/PlayTimeAllocationService.swift */; };
+		A10000000000000000000022 /* Views/PlayTimeAllocationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* Views/PlayTimeAllocationView.swift */; };
+		A20000000000000000000002 /* PlayTimeAllocationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* PlayTimeAllocationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -91,6 +95,10 @@
 		FBA6142FF6B17CF4C6644331 /* SyncExperienceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncExperienceTests.swift; sourceTree = "<group>"; };
 		EF3696B96D200E4B7A1AD77F /* AIProductExperienceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIProductExperienceTests.swift; sourceTree = "<group>"; };
 		1D010D87DC8E27AA3C563789 /* SavedPlanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedPlanTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000020 /* Models/PlayTimeAllocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/PlayTimeAllocation.swift; sourceTree = "<group>"; };
+		B10000000000000000000021 /* Services/PlayTimeAllocationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/PlayTimeAllocationService.swift; sourceTree = "<group>"; };
+		B10000000000000000000022 /* Views/PlayTimeAllocationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/PlayTimeAllocationView.swift; sourceTree = "<group>"; };
+		B20000000000000000000003 /* PlayTimeAllocationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayTimeAllocationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -124,6 +132,9 @@
 			isa = PBXGroup;
 			children = (
 				65D5791215BDBEBCF8682057 /* Services/LibraryExperience.swift */,
+				B10000000000000000000020 /* Models/PlayTimeAllocation.swift */,
+				B10000000000000000000021 /* Services/PlayTimeAllocationService.swift */,
+				B10000000000000000000022 /* Views/PlayTimeAllocationView.swift */,
 				B10000000000000000000001 /* YouJiApp.swift */,
 				B10000000000000000000002 /* Models/GameRecord.swift */,
 				B10000000000000000000003 /* Design/Theme.swift */,
@@ -173,6 +184,7 @@
 				EF3696B96D200E4B7A1AD77F /* AIProductExperienceTests.swift */,
 				FBA6142FF6B17CF4C6644331 /* SyncExperienceTests.swift */,
 				79649A974DECFDE9CB8C971D /* LibraryExperienceTests.swift */,
+				B20000000000000000000003 /* PlayTimeAllocationTests.swift */,
 				B20000000000000000000001 /* YouJiDataTests.swift */,
 			);
 			path = YouJiTests;
@@ -280,6 +292,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				52FDDC156A84CD253044277D /* LibraryExperience.swift in Sources */,
+				A10000000000000000000020 /* Models/PlayTimeAllocation.swift in Sources */,
+				A10000000000000000000021 /* Services/PlayTimeAllocationService.swift in Sources */,
+				A10000000000000000000022 /* Views/PlayTimeAllocationView.swift in Sources */,
 				A10000000000000000000001 /* YouJiApp.swift in Sources */,
 				A10000000000000000000002 /* Models/GameRecord.swift in Sources */,
 				A10000000000000000000003 /* Design/Theme.swift in Sources */,
@@ -317,6 +332,7 @@
 				E0F4632177228CA4AC365913 /* AIProductExperienceTests.swift in Sources */,
 				68FFECB9B06BBCDF913E1504 /* SyncExperienceTests.swift in Sources */,
 				94EE4E75734110B3D9EEF588 /* LibraryExperienceTests.swift in Sources */,
+				A20000000000000000000002 /* PlayTimeAllocationTests.swift in Sources */,
 				A20000000000000000000001 /* YouJiDataTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

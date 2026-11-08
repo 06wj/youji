@@ -1,0 +1,59 @@
+name: Build iPhone IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Run unit tests
+        run: |
+          xcodebuild \
+            -project YouJi.xcodeproj \
+            -scheme YouJi \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2' \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      - name: Build unsigned iPhone IPA
+        run: bash scripts/build-unsigned-ipa.sh "$RUNNER_TEMP/youji-ipa"
+
+      - name: Upload IPA
+        id: ipa
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ runner.temp }}/youji-ipa/YouJi-unsigned.ipa
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Explain installation
+        env:
+          IPA_DOWNLOAD_URL: ${{ steps.ipa.outputs.artifact-url }}
+        run: |
+          printf '[下载 YouJi-unsigned.ipa](%s)\n\n' "$IPA_DOWNLOAD_URL" >> "$GITHUB_STEP_SUMMARY"
+          cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          用手机登录 GitHub 后下载，将 IPA 导入 AltStore / SideStore 签名安装。
+          此安装包未签名，不能直接点开安装；免费 Apple 账号仍需在 7 天到期前续签。
+          首次安装续签工具需要电脑，后续可按其远程续签指南在手机上操作。
+          完整步骤见仓库的 docs/PHONE_INSTALL.md。
+          EOF

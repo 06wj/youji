@@ -16,6 +16,8 @@ struct GameDetailView: View {
     @State private var selectedPlan: SavedGamePlan?
     @Query private var snapshots: [PlaySnapshot]
     @Query private var activities: [DailyPlayActivity]
+    @Query private var playTimeAllocations: [PlayTimeAllocation]
+    @State private var showingPlayTimeEditor = false
     @Query(sort: \SavedGamePlan.createdAt, order: .reverse) private var plans: [SavedGamePlan]
     let accountScopeKey: String
     let initialSection: GameDetailInitialSection?
@@ -35,6 +37,7 @@ struct GameDetailView: View {
             filter: #Predicate<PlaySnapshot> { $0.gameID == gameID },
             sort: \PlaySnapshot.date
         )
+        _playTimeAllocations = Query(filter: #Predicate<PlayTimeAllocation> { $0.gameID == gameID })
         _activities = Query(
             filter: #Predicate<DailyPlayActivity> { $0.gameID == gameID },
             sort: \DailyPlayActivity.day,
@@ -70,6 +73,14 @@ struct GameDetailView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
+                    if game.platform == .playStation && !game.accountID.isEmpty {
+                        Menu {
+                            Button("调整游玩日期", systemImage: "calendar.badge.clock") { showingPlayTimeEditor = true }
+                        } label: { Image(systemName: "ellipsis.circle") }
+                        .accessibilityLabel("更多游戏操作")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") {
                         do {
                             try modelContext.save()
@@ -80,6 +91,7 @@ struct GameDetailView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showingPlayTimeEditor) { PlayTimeAllocationListView(game: game) }
             .sheet(item: $selectedPlan) { plan in
                 SavedPlanDetailView(plan: plan, accountScopeKey: accountScopeKey)
             }
@@ -248,8 +260,8 @@ struct GameDetailView: View {
         } catch { persistenceError = error.localizedDescription }
     }
 
-    private var dailySnapshots: [PlaySnapshot] {
-        PlayHistoryChartBuilder.dailySnapshots(snapshots)
+    private var dailySnapshots: [PlayHistoryPoint] {
+        PlayTimeResolver.historyPoints(snapshots: snapshots, allocations: PlayTimeResolver.values(playTimeAllocations))
     }
 
     private var historyYDomain: ClosedRange<Double> {
@@ -323,6 +335,13 @@ struct GameDetailView: View {
             } else {
                 Text("再同步一次后，这里会开始显示时长变化。")
                     .font(.caption).foregroundStyle(YJColor.muted)
+            }
+            if game.platform == .playStation {
+                NavigationLink {
+                    PlayTimelineView(games: [game], accountScopeKey: accountScopeKey)
+                } label: {
+                    Label("查看每日记录", systemImage: "calendar").font(.caption.bold())
+                }
             }
         }
         .padding(17)
@@ -582,6 +601,7 @@ struct InsightsView: View {
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \PlaySnapshot.date) private var snapshots: [PlaySnapshot]
     @Query(sort: \DailyPlayActivity.day) private var activities: [DailyPlayActivity]
+    @Query private var playTimeAllocations: [PlayTimeAllocation]
     let games: [GameRecord]
     let accountScopeKey: String
     @State private var showPlans = false
@@ -598,7 +618,8 @@ struct InsightsView: View {
         PlayTimelineBuilder.entries(
             snapshots: relevantSnapshots,
             activities: activities,
-            includedGameIDs: Set(games.map(\.applicationID))
+            includedGameIDs: Set(games.map(\.applicationID)),
+            allocations: PlayTimeResolver.values(playTimeAllocations)
         )
     }
     private var timelineDays: [PlayTimelineDay] {
@@ -653,7 +674,7 @@ struct InsightsView: View {
     }
 
     private var insightsInfoText: String {
-        let method = "游迹根据每次主动同步时的游戏总时长计算变化；两次同步之间的游玩会归入后一次同步日期。Switch 有每日活动时会优先使用每日记录。"
+        let method = "时长优先按已记录的游玩日期呈现；没有每日信息时，根据两次同步的总时长变化，归入后一次同步日期。奖杯仍按同步日期统计。"
         guard let first = snapshotDays.first, let last = snapshotDays.last else {
             return "完成同步后，这里会开始记录游玩变化。\n\n\(method)"
         }
@@ -666,7 +687,6 @@ struct InsightsView: View {
     private var timelineCard: some View {
         NavigationLink {
             PlayTimelineView(
-                entries: timelineEntries,
                 games: games,
                 accountScopeKey: accountScopeKey
             )
@@ -731,8 +751,8 @@ struct InsightsView: View {
     }
 
     private func periodCard(_ title: String, days: Int, color: Color) -> some View {
-        let start = Calendar.current.date(byAdding: .day, value: -days, to: .now) ?? .distantPast
-        let insight = PlayInsightCalculator.insight(snapshots: relevantSnapshots, since: start)
+        let start = Calendar.current.date(byAdding: .day, value: -(days - 1), to: Calendar.current.startOfDay(for: .now)) ?? .distantPast
+        let insight = PlayInsightCalculator.insight(snapshots: relevantSnapshots, since: start, allocations: PlayTimeResolver.values(playTimeAllocations))
         return NavigationLink {
             InsightPeriodDetailView(
                 title: title,
@@ -767,7 +787,7 @@ struct InsightsView: View {
 
     private var yearCard: some View {
         let start = Calendar.current.dateInterval(of: .year, for: .now)?.start ?? .distantPast
-        let insight = PlayInsightCalculator.insight(snapshots: relevantSnapshots, since: start)
+        let insight = PlayInsightCalculator.insight(snapshots: relevantSnapshots, since: start, allocations: PlayTimeResolver.values(playTimeAllocations))
         let year = Calendar.current.component(.year, from: .now)
         return NavigationLink {
             InsightPeriodDetailView(
@@ -838,7 +858,13 @@ private struct PlayTimelineDay: Identifiable {
 }
 
 private struct PlayTimelineView: View {
-    let entries: [PlayTimelineEntry]
+    @Query private var snapshots: [PlaySnapshot]
+    @Query private var activities: [DailyPlayActivity]
+    @Query private var playTimeAllocations: [PlayTimeAllocation]
+    private var entries: [PlayTimelineEntry] {
+        PlayTimelineBuilder.entries(snapshots: snapshots, activities: activities,
+            includedGameIDs: Set(games.map(\.applicationID)), allocations: PlayTimeResolver.values(playTimeAllocations))
+    }
     let games: [GameRecord]
     let accountScopeKey: String
     @State private var newestFirst = true
@@ -973,6 +999,7 @@ private struct InsightMonthBreakdown: Identifiable {
 }
 
 private struct InsightPeriodDetailView: View {
+    @Query private var playTimeAllocations: [PlayTimeAllocation]
     let title: String
     let start: Date
     let color: Color
@@ -984,11 +1011,11 @@ private struct InsightPeriodDetailView: View {
     @State private var showingMethodologyInfo = false
 
     private var insight: PlayPeriodInsight {
-        PlayInsightCalculator.insight(snapshots: snapshots, since: start)
+        PlayInsightCalculator.insight(snapshots: snapshots, since: start, allocations: PlayTimeResolver.values(playTimeAllocations))
     }
 
     private var contributions: [PlayGameContribution] {
-        PlayInsightCalculator.contributions(snapshots: snapshots, since: start)
+        PlayInsightCalculator.contributions(snapshots: snapshots, since: start, allocations: PlayTimeResolver.values(playTimeAllocations))
     }
 
     private var gamesByID: [String: GameRecord] {
@@ -1013,7 +1040,7 @@ private struct InsightPeriodDetailView: View {
             let monthEnd = min(.now, next.addingTimeInterval(-1))
             result.append(InsightMonthBreakdown(
                 start: month,
-                insight: PlayInsightCalculator.insight(snapshots: snapshots, since: month, now: monthEnd)
+                insight: PlayInsightCalculator.insight(snapshots: snapshots, since: month, now: monthEnd, allocations: PlayTimeResolver.values(playTimeAllocations))
             ))
             month = next
         }
@@ -1046,7 +1073,7 @@ private struct InsightPeriodDetailView: View {
         .alert("数据说明", isPresented: $showingMethodologyInfo) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text("游迹根据每次主动同步时的游戏总时长计算变化，因此两次同步之间的游玩会归入后一次同步日期，不等同于游戏平台的逐日记录。")
+            Text("时长优先按已记录的游玩日期统计；缺少每日信息时，两次同步之间的变化归入后一次同步日期。奖杯仍按同步日期统计。")
         }
         .sheet(item: $selectedGame) { game in
             GameDetailView(game: game, accountScopeKey: accountScopeKey)
@@ -1725,7 +1752,7 @@ struct DataManagementView: View {
                         .foregroundStyle(YJColor.purple)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("这台设备共有 \(games.count) 款游戏记录").font(.subheadline.bold())
-                        Text("完整备份还会包含同步历史、每日活动和 AI 内容。")
+                        Text("完整备份还包含同步历史、每日活动、日期分配和 AI 内容。")
                             .font(.caption).foregroundStyle(YJColor.muted)
                     }
                 }
@@ -1740,7 +1767,7 @@ struct DataManagementView: View {
             } header: {
                 Text("导出")
             } footer: {
-                Text("完整备份包含游戏、同步历史、每日活动和 AI 内容；不包含游戏平台登录信息、账号密码或 AI API Key。")
+                Text("完整备份包含游戏、同步历史、每日活动、日期分配和 AI 内容；不包含游戏平台登录信息、账号密码或 AI API Key。")
             }
             Section {
                 Button("从备份恢复") { isImporting = true }

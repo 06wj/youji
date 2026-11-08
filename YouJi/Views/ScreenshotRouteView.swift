@@ -38,6 +38,7 @@ struct ScreenshotRouteView: View {
     @Query(sort: \GameRecord.lastPlayedAt, order: .reverse) private var games: [GameRecord]
     @Query(sort: \AIConversation.updatedAt, order: .reverse) private var conversations: [AIConversation]
     @Query private var snapshots: [PlaySnapshot]
+    @Query private var playTimeAllocations: [PlayTimeAllocation]
     @Query private var activities: [DailyPlayActivity]
     @Query private var plans: [SavedGamePlan]
     @StateObject private var sync = SyncCoordinator()
@@ -81,7 +82,8 @@ struct ScreenshotRouteView: View {
         case .overview, .firstRun:
             DashboardView(initialFilter: .all)
         case .weeklyReview:
-            WeeklyReviewView(review: .make(games: currentGames, snapshots: snapshots, activities: activities), accountScopeKey: accountScopeKey)
+            WeeklyReviewView(review: .make(games: currentGames, snapshots: snapshots, activities: activities,
+                allocations: PlayTimeResolver.values(playTimeAllocations)), accountScopeKey: accountScopeKey)
         case .aiDraft:
             AIChatListView(games: currentGames, accountScopeKey: accountScopeKey,
                            initialDraft: DesignPreviewData.isEnabled ? AIPrompts.shortSessionDraft : nil)

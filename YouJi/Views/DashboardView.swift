@@ -44,6 +44,7 @@ struct DashboardView: View {
     @Query(sort: \GameRecord.lastPlayedAt, order: .reverse) private var games: [GameRecord]
     @Query private var dailyActivities: [DailyPlayActivity]
     @Query private var snapshots: [PlaySnapshot]
+    @Query private var playTimeAllocations: [PlayTimeAllocation]
     @StateObject private var sync = SyncCoordinator()
     @Environment(\.scenePhase) private var scenePhase
     @State private var referenceDate = Date.now
@@ -147,7 +148,8 @@ struct DashboardView: View {
     }
     private var weeklyReview: LocalWeeklyReview {
         LocalWeeklyReview.make(games: currentAccountGames, snapshots: snapshots,
-                               activities: dailyActivities, now: referenceDate)
+                               activities: dailyActivities, now: referenceDate,
+                               allocations: PlayTimeResolver.values(playTimeAllocations))
     }
     private var isFirstUse: Bool {
         games.isEmpty && !sync.isPlayStationConnected && !sync.isNintendoConnected

@@ -537,13 +537,20 @@ final class SyncCoordinator: ObservableObject {
                     }
                 }
                 do {
-                    if let update = try await playStationAPI.loadTrophy(
+                    let update = try await playStationAPI.loadTrophy(
                         titleID: title.titleID,
                         accessToken: accessToken
-                    ), let record = recordsByTitleID[update.titleID] {
-                        try LocalDataRevision.check(revision)
+                    )
+                    try LocalDataRevision.check(revision)
+                    guard let record = recordsByTitleID[title.titleID] else {
+                        trophyFailures += 1
+                        continue
+                    }
+                    if let update {
                         try applyTrophy(update, to: record, modelContext: modelContext)
-                    } else {
+                    } else if record.trophiesDefined > 0 {
+                        // Previously known trophies unexpectedly disappeared. Preserve them
+                        // and report this as retryable, unlike a title with no trophy record.
                         trophyFailures += 1
                     }
                 } catch PlayStationSyncError.authenticationExpired {

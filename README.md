@@ -61,10 +61,11 @@ Chats are saved locally and organized into easy-to-find topics. Continue an exis
 - **Trophies and platinums:** Revisit PlayStation trophy progress, completion rates, and every platinum you worked for.
 - **Recent activity:** Understand your Nintendo Switch rhythm through a focused seven-day view.
 - **Play calendar:** Keep exact Switch play dates and per-game minutes on device after each sync, even after they leave Nintendo's seven-day window.
+- **PlayStation play dates:** Quietly adjust a time increase from a game’s More menu, split it across actual play dates, or restore its original distribution. Timelines, cumulative charts, weekly reviews, and period totals share the same dates while original platform records stay intact.
 - **Long-term trends:** Review seven-day, 30-day, and annual changes in play time and trophies, with calculation details available only when you ask for them.
 - **A home that follows your progress:** Start with direct platform connection buttons; return to a compact archive, recently played games, visible update times, and a local seven-day recap. The full library keeps its play-time sorting and cover/list choice.
 - **Searchable game archive:** Search by title or note, open a game timeline, and add favorites, visibility, status, and private notes.
-- **Recoverable sync:** See per-platform stages and trophy progress, browse already-saved PS games, and reconnect or retry directly. Old records remain available when part of a sync fails.
+- **Recoverable sync:** See per-platform stages and trophy progress, browse already-saved PS games, and reconnect or retry directly. Titles without a PSN trophy record do not trigger a failure warning and are checked again on your next manual sync. Old records remain available when part of a sync fails.
 - **Account-aware history:** See which account is connected, inspect dated sync receipts, and reopen disconnected local archives without mixing accounts.
 - **A cleaner collection:** Keep meaningful games in focus while short trials and long-forgotten launches stay out of the way.
 - **Portable local data:** Export a complete backup or game-library table, restore by merging, and remove an account archive or all local content when you choose.
@@ -89,8 +90,8 @@ Game Brain reopens your latest saved profile and its original filters. Profile f
 - The AI receives only the information needed for the analysis or conversation, never your platform credentials.
 - AI conversations are separated by the local account scope, personality results can be revisited and shared as image cards, and useful replies can be saved to a local play/replay list.
 - Complete backups never include platform credentials or the AI API key.
-- Backup v2 also carries chat drafts, plan links, profile input fingerprints, and stable Switch window dates; older backups remain readable.
-- Backup v2 preserves unreadable conversation data and still imports v1 backups. Restore validates account identities before writing and can repair damaged conversation components from an older readable backup.
+- Backup v3 adds PlayStation date allocations and their reset history. It also carries chat drafts, plan links, profile input fingerprints, and stable Switch window dates; older backups remain readable.
+- Backup v3 preserves unreadable conversation data and still imports v1/v2 backups. Restore validates account identities before writing and can repair damaged conversation components from an older readable backup.
 - Failed writes leave the visible archive unchanged. Deleting, disconnecting, or restoring invalidates older in-flight requests so they cannot repopulate the archive.
 - If the database cannot open, a recovery screen lets you export its original files or restore a JSON backup into a new database while keeping the original. A raw recovery package preserves files for recovery work; it is not a JSON backup.
 
@@ -122,6 +123,10 @@ xcodebuild \
 ```
 
 The simulator is suitable for exploring the interface. Connecting real PlayStation and Nintendo accounts requires a physical device.
+
+### Build on GitHub, install on your iPhone
+
+The manual **Build iPhone IPA** GitHub Actions workflow runs tests and produces an unsigned Release IPA without Apple credentials. Import it into AltStore / SideStore to sign and install on your phone. After the sideloading tool's initial computer setup, its remote refresh mode can renew apps without keeping your Mac on. Free Apple accounts still require renewal before the seven-day expiry. See the [phone installation guide](docs/PHONE_INSTALL.md).
 
 ### Stack
 

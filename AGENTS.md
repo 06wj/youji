@@ -23,6 +23,9 @@ The interface is Chinese-first. Prefer an official Chinese game title when a pla
 | Path | Responsibility |
 | --- | --- |
 | `YouJi/Models/GameRecord.swift` | SwiftData model, platform identity, library visibility rule |
+| `YouJi/Models/PlayTimeAllocation.swift` | Independent PS play-date allocations and reset history |
+| `YouJi/Services/PlayTimeAllocationService.swift` | Allocation validation, atomic edits, and shared history projection |
+| `YouJi/Views/PlayTimeAllocationView.swift` | Quiet per-game date-allocation editor |
 | `YouJi/Models/AIConversation.swift` | Persistent AI conversation, messages, and frozen game context |
 | `YouJi/Services/ProductDataService.swift` | Versioned backup/restore, CSV, diagnostics, snapshot insights, reminders, and profile share cards |
 | `YouJi/Services/SyncCoordinator.swift` | Only coordinator between views, platform clients, and persistence |
@@ -67,6 +70,7 @@ Preserve these behaviors unless the user explicitly changes the product requirem
 
 - `GameRecord.applicationID` is globally unique. Use `<platform>:<accountID>:<titleID>`; never merge records from different accounts.
 - `PlaySnapshot` is append-only synchronization history. Store cumulative minutes and trophies for the current platform account after a completed sync.
+- PS play-date edits belong in `PlayTimeAllocation`, never in `GameRecord` or `PlaySnapshot`. Preserve the source increase total, shared display projection, and reset tombstones in backup v3; retain v1/v2 import compatibility.
 - `GameRecord.totalMinutes` is the canonical duration unit. Convert only for display/export.
 - Keep the seven-element `weeklyMinutes` array ordered oldest to newest according to the existing Nintendo mapping.
 - Keep credentials and the user-provided AI API key in Keychain with `AfterFirstUnlockThisDeviceOnly`. Never put them in SwiftData, UserDefaults, source files, fixtures, screenshots, or logs.

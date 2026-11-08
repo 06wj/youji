@@ -112,6 +112,28 @@ final class SyncExperienceTests: XCTestCase {
 
     @MainActor
     func testPlayStationSavesGamesBeforeTrophiesAndKeepsPartialFailureRetryable() async throws {
+        try await checkPlayStationTrophySync(status: 503, body: #"{"error":{"message":"private response"}}"#, expectedFailures: 1)
+    }
+
+    @MainActor
+    func testEmptyTrophyRecordDoesNotReportFailureOrAdvanceCache() async throws {
+        try await checkPlayStationTrophySync(status: 200, body: #"{"titles":[{"npTitleId":"pending","trophyTitles":[]}]}"#, expectedFailures: 0)
+    }
+
+    @MainActor
+    func testEmptyTrophyRecordPreservesPreviouslyKnownTrophiesAndReportsFailure() async throws {
+        try await checkPlayStationTrophySync(status: 200, body: #"{"titles":[{"npTitleId":"pending","trophyTitles":[]}]}"#, expectedFailures: 1, previouslyKnownTrophies: true)
+    }
+
+    @MainActor
+    func testUnchangedPlayStationSyncStillRecordsSnapshotsAndUpdatesSyncTime() async throws {
+        try await checkPlayStationTrophySync(status: 200, body: #"{"titles":[{"npTitleId":"pending","trophyTitles":[]}]}"#,
+                                            expectedFailures: 0, repeatUnchangedSync: true)
+    }
+
+    @MainActor
+    private func checkPlayStationTrophySync(status: Int, body: String, expectedFailures: Int,
+                                           previouslyKnownTrophies: Bool = false, repeatUnchangedSync: Bool = false) async throws {
         let defaults = UserDefaults.standard
         let keys = ["playstation-account-id", "playstation-account-name", "last-sync-at", "last-sync-error",
                     "playstation-trophies.progress-test-account", "sync-date.ps.progress-test-account", "sync-receipt.ps.progress-test-account"]
@@ -121,7 +143,8 @@ final class SyncExperienceTests: XCTestCase {
         }
         let gate = SyncProgressGate()
         SyncProgressProtocol.gate = gate
-        defer { gate.release(); SyncProgressProtocol.gate = nil }
+        SyncProgressProtocol.trophyResponse = (status, body)
+        defer { gate.release(); SyncProgressProtocol.gate = nil; SyncProgressProtocol.trophyResponse = nil }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [SyncProgressProtocol.self]
         configuration.timeoutIntervalForRequest = 3
@@ -138,6 +161,14 @@ final class SyncExperienceTests: XCTestCase {
         cached.trophiesEarned = 3
         cached.trophiesDefined = 10
         container.mainContext.insert(cached)
+        let previousTrophyDate = previouslyKnownTrophies ? Date(timeIntervalSince1970: 1_700_000_000) : nil
+        if previouslyKnownTrophies {
+            let pending = GameRecord(applicationID: "ps:progress-test-account:pending", accountID: "progress-test-account", titleID: "pending", platform: .playStation, title: "Pending", totalMinutes: 120)
+            pending.trophiesEarned = 2
+            pending.trophiesDefined = 10
+            pending.trophiesSyncedAt = previousTrophyDate
+            container.mainContext.insert(pending)
+        }
         try container.mainContext.save()
         let operation = Task {
             await coordinator.finishPlayStationAuthorization(npsso: "test-placeholder", modelContext: container.mainContext)
@@ -163,13 +194,42 @@ final class SyncExperienceTests: XCTestCase {
         XCTAssertFalse(coordinator.isSyncing)
         XCTAssertNil(coordinator.syncProgress)
         XCTAssertNil(coordinator.errorMessage, "A partial trophy failure should not present the whole import as failed")
-        XCTAssertEqual(coordinator.issue(for: .playStation)?.recovery, .retry)
-        XCTAssertEqual(coordinator.issue(for: .playStation)?.isPartialSuccess, true)
-        XCTAssertEqual(coordinator.playStationReceipt?.trophyFailures, 1)
+        if expectedFailures > 0 {
+            XCTAssertEqual(coordinator.issue(for: .playStation)?.recovery, .retry)
+            XCTAssertEqual(coordinator.issue(for: .playStation)?.isPartialSuccess, true)
+        } else {
+            XCTAssertNil(coordinator.issue(for: .playStation))
+        }
+        XCTAssertEqual(coordinator.playStationReceipt?.trophyFailures, expectedFailures)
         let games = try container.mainContext.fetch(FetchDescriptor<GameRecord>())
         XCTAssertEqual(games.first(where: { $0.titleID == "cached" })?.trophiesEarned, 3)
-        XCTAssertNil(games.first(where: { $0.titleID == "pending" })?.trophiesSyncedAt)
+        let pending = try XCTUnwrap(games.first(where: { $0.titleID == "pending" }))
+        XCTAssertEqual(pending.trophiesSyncedAt, previousTrophyDate)
+        XCTAssertEqual(pending.trophiesEarned, previouslyKnownTrophies ? 2 : 0)
+        XCTAssertEqual(pending.trophiesDefined, previouslyKnownTrophies ? 10 : 0)
         XCTAssertEqual(try container.mainContext.fetchCount(FetchDescriptor<PlaySnapshot>()), 2)
+
+        if repeatUnchangedSync {
+            let firstSnapshots = try container.mainContext.fetch(FetchDescriptor<PlaySnapshot>())
+            let firstIDs = Set(firstSnapshots.map(\.snapshotID))
+            let firstSyncAt = try XCTUnwrap(coordinator.lastPlayStationSyncAt)
+            SyncProgressProtocol.gate = nil
+            await coordinator.finishPlayStationAuthorization(npsso: "test-placeholder", modelContext: container.mainContext)
+            XCTAssertNil(coordinator.issue(for: .playStation))
+            XCTAssertEqual(coordinator.playStationReceipt?.addedMinutes, 0)
+            XCTAssertEqual(coordinator.playStationReceipt?.changedGames, 0)
+            XCTAssertGreaterThan(try XCTUnwrap(coordinator.lastPlayStationSyncAt), firstSyncAt)
+            let allSnapshots = try container.mainContext.fetch(FetchDescriptor<PlaySnapshot>())
+            XCTAssertEqual(allSnapshots.count, 4, "A zero increase must still leave an observation for each game")
+            let newSnapshots = allSnapshots.filter { !firstIDs.contains($0.snapshotID) }
+            XCTAssertEqual(newSnapshots.count, 2)
+            for snapshot in newSnapshots {
+                let original = try XCTUnwrap(firstSnapshots.first { $0.gameID == snapshot.gameID })
+                XCTAssertGreaterThan(snapshot.date, original.date)
+                XCTAssertEqual(snapshot.totalMinutes, original.totalMinutes)
+                XCTAssertEqual(snapshot.trophiesEarned, original.trophiesEarned)
+            }
+        }
     }
 }
 
@@ -186,6 +246,7 @@ private final class SyncProgressGate: @unchecked Sendable {
 
 private final class SyncProgressProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var gate: SyncProgressGate?
+    nonisolated(unsafe) static var trophyResponse: (status: Int, body: String)?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -210,8 +271,8 @@ private final class SyncProgressProtocol: URLProtocol, @unchecked Sendable {
         case "/api/gamelist/v2/users/me/titles":
             body = #"{"titles":[{"titleId":"cached","name":"Cached","playDuration":"PT2H","lastPlayedDateTime":"2026-01-01T00:00:00Z"},{"titleId":"pending","name":"Pending","playDuration":"PT3H","lastPlayedDateTime":"2026-01-01T00:00:00Z"}],"totalItemCount":2}"#
         case "/api/trophy/v1/users/me/titles/trophyTitles":
-            status = 503
-            body = #"{"error":{"message":"private response"}}"#
+            status = Self.trophyResponse?.status ?? 503
+            body = Self.trophyResponse?.body ?? #"{"error":{"message":"private response"}}"#
         case "/api/trophy/v1/users/me/trophySummary":
             body = #"{"trophyLevel":"2","progress":10,"tier":1,"earnedTrophies":{"bronze":3,"silver":0,"gold":0,"platinum":0}}"#
         default:

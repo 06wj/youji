@@ -61,6 +61,7 @@ enum LocalPersistence {
         let names = entities
         if names.contains("GameRecord") { _ = try? context.fetch(FetchDescriptor<GameRecord>()) }
         if names.contains("PlaySnapshot") { _ = try? context.fetch(FetchDescriptor<PlaySnapshot>()) }
+        if names.contains("PlayTimeAllocation") { _ = try? context.fetch(FetchDescriptor<PlayTimeAllocation>()) }
         if names.contains("DailyPlayActivity") { _ = try? context.fetch(FetchDescriptor<DailyPlayActivity>()) }
         if names.contains("AIConversation") { _ = try? context.fetch(FetchDescriptor<AIConversation>()) }
         if names.contains("AIProfileResult") { _ = try? context.fetch(FetchDescriptor<AIProfileResult>()) }
@@ -85,6 +86,14 @@ enum LocalPersistence {
             copy(source, target, [\.snapshotID, \.gameID, \.accountID, \.platformRaw])
             copy(source, target, [\.totalMinutes, \.trophiesEarned])
             copy(source, target, [\.date])
+        case let source as PlayTimeAllocation:
+            let id = source.allocationID
+            let registered: PlayTimeAllocation? = context.registeredModel(for: source.persistentModelID)
+            guard let target = registered ?? (try? context.fetch(FetchDescriptor<PlayTimeAllocation>(
+                predicate: #Predicate { $0.allocationID == id }
+            )).first) else { return }
+            copy(source, target, [\.allocationID, \.gameID, \.accountID])
+            copy(source, target, [\.valueData])
         case let source as DailyPlayActivity:
             guard let target: DailyPlayActivity = context.registeredModel(for: source.persistentModelID) else { return }
             copy(source, target, [\.activityID, \.gameID, \.accountID, \.titleID, \.platformRaw, \.dayKey])

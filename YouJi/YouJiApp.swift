@@ -55,7 +55,7 @@ final class LocalDatabaseState: ObservableObject {
     private var manifestURL: URL { rootDirectory.appendingPathComponent("youji-active-store.json") }
 
     static var schema: Schema {
-        Schema([GameRecord.self, PlaySnapshot.self, DailyPlayActivity.self,
+        Schema([GameRecord.self, PlaySnapshot.self, DailyPlayActivity.self, PlayTimeAllocation.self,
                 AIConversation.self, AIProfileResult.self, SavedGamePlan.self])
     }
 

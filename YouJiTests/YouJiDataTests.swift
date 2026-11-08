@@ -264,6 +264,7 @@ final class YouJiDataTests: XCTestCase {
             AIConversation.self,
             AIProfileResult.self,
             SavedGamePlan.self,
+            PlayTimeAllocation.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let context = container.mainContext
@@ -697,6 +698,7 @@ final class YouJiDataTests: XCTestCase {
             AIConversation.self,
             AIProfileResult.self,
             SavedGamePlan.self,
+            PlayTimeAllocation.self,
             configurations: configuration
         )
         let context = source.mainContext
@@ -754,6 +756,7 @@ final class YouJiDataTests: XCTestCase {
             AIConversation.self,
             AIProfileResult.self,
             SavedGamePlan.self,
+            PlayTimeAllocation.self,
             configurations: targetConfiguration
         )
         let staleConversation = AIConversation(
@@ -828,6 +831,7 @@ final class YouJiDataTests: XCTestCase {
             AIConversation.self,
             AIProfileResult.self,
             SavedGamePlan.self,
+            PlayTimeAllocation.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let oldGame = GameRecord(
@@ -851,6 +855,7 @@ final class YouJiDataTests: XCTestCase {
             AIConversation.self,
             AIProfileResult.self,
             SavedGamePlan.self,
+            PlayTimeAllocation.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let newerGame = GameRecord(
@@ -882,6 +887,7 @@ final class YouJiDataTests: XCTestCase {
             AIConversation.self,
             AIProfileResult.self,
             SavedGamePlan.self,
+            PlayTimeAllocation.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let backedUpGame = GameRecord(
@@ -907,6 +913,7 @@ final class YouJiDataTests: XCTestCase {
             AIConversation.self,
             AIProfileResult.self,
             SavedGamePlan.self,
+            PlayTimeAllocation.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let legacyGame = GameRecord(
@@ -941,6 +948,7 @@ final class YouJiDataTests: XCTestCase {
             AIConversation.self,
             AIProfileResult.self,
             SavedGamePlan.self,
+            PlayTimeAllocation.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let backedUpGame = GameRecord(
@@ -966,6 +974,7 @@ final class YouJiDataTests: XCTestCase {
             AIConversation.self,
             AIProfileResult.self,
             SavedGamePlan.self,
+            PlayTimeAllocation.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let freshlySyncedGame = GameRecord(
@@ -1074,10 +1083,27 @@ extension YouJiDataTests {
     }
 
     func testTrophiesRequireMatchingTitleAndCompleteCounts() async throws {
-        let session = stubSession(body: #"{"titles":[{"npTitleId":"other","trophyTitles":[{"definedTrophies":{"bronze":5,"silver":0,"gold":0,"platinum":0},"earnedTrophies":{"bronze":4,"silver":0,"gold":0,"platinum":0}}]}]}"#)
         defer { NintendoURLProtocolStub.handler = nil }
-        let result = try await PlayStationAPIClient(session: session).loadTrophy(titleID: "requested", accessToken: "test")
-        XCTAssertNil(result)
+        for body in [
+            #"{"titles":[]}"#,
+            #"{"titles":[{"npTitleId":"other","trophyTitles":[]}]}"#,
+            #"{"titles":[{"npTitleId":"other","trophyTitles":[{"definedTrophies":{"bronze":5,"silver":0,"gold":0,"platinum":0},"earnedTrophies":{"bronze":4,"silver":0,"gold":0,"platinum":0}}]}]}"#,
+            #"{"titles":[{"npTitleId":"requested","trophyTitles":[{"definedTrophies":{"bronze":5,"silver":0,"gold":0,"platinum":0},"earnedTrophies":{"bronze":4}}]}]}"#
+        ] {
+            let session = stubSession(body: body)
+            defer { session.invalidateAndCancel() }
+            do {
+                _ = try await PlayStationAPIClient(session: session).loadTrophy(titleID: "requested", accessToken: "test")
+                XCTFail("Missing, mismatched or incomplete trophy data must remain a retryable error")
+            } catch PlayStationSyncError.decode { }
+        }
+    }
+
+    func testMatchingTitleWithEmptyTrophyListHasNoTrophyRecord() async throws {
+        let session = stubSession(body: #"{"titles":[{"npTitleId":"requested","trophyTitles":[]}]}"#)
+        defer { NintendoURLProtocolStub.handler = nil; session.invalidateAndCancel() }
+        let update = try await PlayStationAPIClient(session: session).loadTrophy(titleID: "requested", accessToken: "test")
+        XCTAssertNil(update, "An empty trophy record must not become a cached zero-trophy update")
     }
 
     @MainActor

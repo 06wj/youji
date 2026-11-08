@@ -50,9 +50,18 @@ actor PlayStationAPIClient {
             accessToken: accessToken,
             stage: "按游戏 ID 读取奖杯"
         )
-        guard !response.titles.isEmpty else { return nil }
-        let trophyTitles = response.titles.filter { $0.npTitleID == titleID }.flatMap(\.trophyTitles)
-        guard !trophyTitles.isEmpty else { return nil }
+        let matchingTitles = response.titles.filter { $0.npTitleID == titleID }
+        guard !matchingTitles.isEmpty else {
+            logger.error("Trophy response did not match title \(titleID, privacy: .public)")
+            throw PlayStationSyncError.decode("奖杯记录与请求的游戏不匹配")
+        }
+        let trophyTitles = matchingTitles.flatMap(\.trophyTitles)
+        // A matching title with an empty list has no trophy record for this account.
+        // Demos and media apps can return this too; do not cache it as zero trophies.
+        guard !trophyTitles.isEmpty else {
+            logger.info("No trophy records for title \(titleID, privacy: .public)")
+            return nil
+        }
         let defined = trophyTitles.reduce(PlayStationTrophyCounts.zero) { $0.adding($1.definedTrophies) }
         let earned = trophyTitles.reduce(PlayStationTrophyCounts.zero) { $0.adding($1.earnedTrophies) }
         guard earned.bronze <= defined.bronze, earned.silver <= defined.silver,

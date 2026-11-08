@@ -95,7 +95,8 @@ struct LocalWeeklyReview {
     var totalTrophies: Int { games.reduce(0) { $0 + $1.trophies } }
 
     static func make(games: [GameRecord], snapshots: [PlaySnapshot], activities: [DailyPlayActivity],
-                     now: Date = .now, calendar: Calendar = .current) -> LocalWeeklyReview {
+                     now: Date = .now, calendar: Calendar = .current,
+                     allocations: [PlayTimeAllocationValue] = []) -> LocalWeeklyReview {
         let today = calendar.startOfDay(for: now)
         let start = calendar.date(byAdding: .day, value: -6, to: today) ?? today
         let byID = Dictionary(games.map { ($0.applicationID, $0) }, uniquingKeysWith: { first, _ in first })
@@ -109,7 +110,7 @@ struct LocalWeeklyReview {
                 && activity.platform == game.platform && activity.displayDay <= now
         }
         let entries = PlayTimelineBuilder.entries(snapshots: snapshots.filter { $0.platform == .playStation }, activities: activities,
-                                                  includedGameIDs: Set(byID.keys))
+                                                  includedGameIDs: Set(byID.keys), allocations: allocations, calendar: calendar)
             .filter { $0.date >= start && $0.date <= now }
         let reviewGames = Dictionary(grouping: entries, by: \.gameID).compactMap { id, entries -> WeeklyReviewGame? in
             guard let game = byID[id] else { return nil }
@@ -187,7 +188,7 @@ struct WeeklyReviewView: View {
                         if let latest = review.latestRecord {
                             Text("最近记录：\(latest.formatted(.dateTime.year().month().day()))").font(.caption.bold())
                         }
-                        Text("仅整理本机已有记录，不会联网。Switch 使用每日活动；PS 时长与奖杯变化归入后一次同步的日期，可能包含更早的游玩。没有记录的日期不代表没有玩。")
+                        Text("仅整理本机已有记录，不会联网。Switch 使用每日活动；PS 时长优先按已记录的游玩日期呈现；缺少每日记录时，时长与奖杯变化归入后一次同步日期。没有记录的日期不代表没有玩。")
                             .font(.caption).foregroundStyle(YJColor.muted).lineSpacing(4)
                     }.padding(16)
                 }.padding(18)
