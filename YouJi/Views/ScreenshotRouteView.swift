@@ -226,16 +226,30 @@ enum DesignPreviewData {
         }
         let scope = AccountScope.key(playStationAccountID: "preview", nintendoAccountID: "preview")
         let conversation = AIConversation(title: "下一场冒险，去哪里？", accountScopeKey: scope,
-            games: games.map { AIAnalysisGame(platform: $0.platform.shortName, title: $0.title,
-                totalMinutes: $0.totalMinutes, trophyRatio: nil) })
+            games: AIGameContext.snapshot(games))
         conversation.messages = [
             AIChatMessage(role: .user, content: "为什么我总是想回到交界地？"),
             AIChatMessage(role: .assistant, content: "你喜欢的，是自己找到答案的那一刻。\n\n从《艾尔登法环》到《空洞骑士》，你的记录里总有一条共同的线索：愿意为了好奇心，走进一个陌生的世界。\n\n下一次重温，不妨放下攻略，选一条从没走过的小路。")
         ]
         container.mainContext.insert(conversation)
-        container.mainContext.insert(AIProfileResult(accountScopeKey: scope, platformFilter: "全部", minimumHours: 1,
+        let profile = AIProfileResult(accountScopeKey: scope, platformFilter: "全部", minimumHours: 1,
             text: "好奇心驱动的世界探索者\n\n你偏爱有秘密的世界，也愿意为一次真正的突破反复尝试。\n\n深度投入\n从交界地到像素农场，你总会给喜欢的作品留出足够的时间。\n\n下一场冒险\n试着放下目标，走一条从没走过的小路。", gameCount: games.count,
-            totalMinutes: games.reduce(0) { $0 + $1.totalMinutes }))
+            totalMinutes: games.reduce(0) { $0 + $1.totalMinutes })
+        container.mainContext.insert(profile)
+        // Optional UI-only fixture reuses bundled artwork; no API request or real
+        // account data is used and the container is always in memory.
+        if ProcessInfo.processInfo.arguments.contains("--youji-image-preview"),
+           let data = UIImage(named: "ArchiveWorld")?.pngData() {
+            container.mainContext.insert(AIGeneratedImage(accountScopeKey: scope, ownerID: profile.id, origin: .profile,
+                prompt: "界面预览用示例图片", modelName: "preview", pngData: data))
+            let image = AIGeneratedImage(accountScopeKey: scope, ownerID: conversation.id, origin: .conversation,
+                prompt: "界面预览用示例图片", modelName: "preview", pngData: data)
+            container.mainContext.insert(image)
+            conversation.messages += [
+                AIChatMessage(role: .user, content: "画一个充满探索感的冒险世界", requestsImage: true),
+                AIChatMessage(role: .assistant, content: "画像示例", imageID: image.id, imageDescription: "探索与冒险的游戏世界")
+            ]
+        }
         container.mainContext.insert(SavedGamePlan(accountScopeKey: scope, title: "重返交界地", note: "这次不看攻略，跟着好奇心走。\n\n先选一条没走过的小路，给自己半小时探索。遇到喜欢的风景就停下来，不急着追赶进度。\n\n如果想挑战一下，再试试以前没用过的武器。", gameID: games.first?.applicationID ?? "", sourceConversationID: conversation.id.uuidString))
         try container.mainContext.save()
         return container

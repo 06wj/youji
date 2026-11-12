@@ -198,7 +198,7 @@ final class PlayTimeAllocationTests: XCTestCase {
         try save(value, in: source.mainContext)
         let data = try ProductDataService.backupData(modelContext: source.mainContext)
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(json["formatVersion"] as? Int, 3)
+        XCTAssertEqual(json["formatVersion"] as? Int, 4)
         let target = try container()
         for _ in 0..<2 { _ = try ProductDataService.restore(data: data, modelContext: target.mainContext) }
         XCTAssertEqual(try values(target.mainContext), try values(source.mainContext))

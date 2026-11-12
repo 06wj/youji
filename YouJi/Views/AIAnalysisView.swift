@@ -345,6 +345,10 @@ struct AIAnalysisView: View {
                     }
 				}
 				.font(.caption.bold()).buttonStyle(.bordered).tint(YJColor.lime)
+                if let profile = currentProfile {
+                    AIProfileImageSection(profile: profile).id(profile.id)
+                        .padding(.vertical, 10)
+                }
                 Button { openChat(draft: AIPrompts.profileFollowUpDraft(analysisText)) } label: {
                     Label("围绕这份分析继续聊", systemImage: "bubble.left.and.bubble.right")
                         .font(.subheadline.bold())

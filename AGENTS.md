@@ -26,6 +26,9 @@ The interface is Chinese-first. Prefer an official Chinese game title when a pla
 | `YouJi/Models/PlayTimeAllocation.swift` | Independent PS play-date allocations and reset history |
 | `YouJi/Services/PlayTimeAllocationService.swift` | Allocation validation, atomic edits, and shared history projection |
 | `YouJi/Views/PlayTimeAllocationView.swift` | Quiet per-game date-allocation editor |
+| `YouJi/Models/AIGeneratedImage.swift` | Account-scoped generated PNGs associated with chats or profiles |
+| `YouJi/Services/AIImageService.swift` | Image validation, atomic persistence, cleanup, and explicit Photos saving |
+| `YouJi/Views/AIImageViews.swift` | Explicit profile image generation, local preview, saving, and sharing |
 | `YouJi/Models/AIConversation.swift` | Persistent AI conversation, messages, and frozen game context |
 | `YouJi/Services/ProductDataService.swift` | Versioned backup/restore, CSV, diagnostics, snapshot insights, reminders, and profile share cards |
 | `YouJi/Services/SyncCoordinator.swift` | Only coordinator between views, platform clients, and persistence |
@@ -35,6 +38,8 @@ The interface is Chinese-first. Prefer an official Chinese game title when a pla
 | `YouJi/Services/KeychainStore.swift` | Platform session and AI API-key storage |
 | `YouJi/Services/AIAnalysisClient.swift` | Explicit AI game-profile and multi-turn chat requests |
 | `YouJi/Services/AIPrompts.swift` | Shared game-brain context plus profile and chat prompt rules |
+| `YouJi/Services/AIRecentPlayContext.swift` | Account-scoped recent 30-day activity capture, date precision, and safe AI context |
+| `YouJi/Services/AIChatDraft.swift` | Isolated chat input state, coalesced draft writes, and lifecycle flushes |
 | `YouJi/Services/AISettingsStore.swift` | AI Keychain and model-name settings |
 | `YouJi/Services/CoverImageStore.swift` | Persistent local cover cache and download deduplication |
 | `YouJi/Views/DashboardView.swift` | Dashboard, platform tabs, sorting, lists, platform-specific sync buttons |
@@ -65,12 +70,14 @@ Preserve these behaviors unless the user explicitly changes the product requirem
 12. AI analysis is never automatic on view appearance. It runs only after an explicit generate action and uses the current filtered result.
 13. AI chat is never automatic. A new conversation snapshots all current-account games with strictly more than 60 minutes; every request includes that snapshot plus the current conversation, and requests happen only after the user sends a message.
 14. AI conversations persist locally, can be created, continued, and deleted, and request a short title after the second AI reply.
+15. Chat uses a unified composer. The model may call the image tool only for an explicit image request. New sends append an account-scoped, local 30-day activity snapshot (including dates and short sessions); retries reuse that snapshot without platform synchronization.
+16. AI uses OpenAI directly. Text, images, and retries require an explicit action; retain frozen chat context, image ownership, and backup v4 compatibility. Never reuse a former provider’s credential with OpenAI.
 
 ## Data and identity rules
 
 - `GameRecord.applicationID` is globally unique. Use `<platform>:<accountID>:<titleID>`; never merge records from different accounts.
 - `PlaySnapshot` is append-only synchronization history. Store cumulative minutes and trophies for the current platform account after a completed sync.
-- PS play-date edits belong in `PlayTimeAllocation`, never in `GameRecord` or `PlaySnapshot`. Preserve the source increase total, shared display projection, and reset tombstones in backup v3; retain v1/v2 import compatibility.
+- PS play-date edits belong in `PlayTimeAllocation`, never in `GameRecord` or `PlaySnapshot`. Preserve the source increase total, shared display projection, and reset tombstones in backup v4; retain v1/v2/v3 import compatibility.
 - `GameRecord.totalMinutes` is the canonical duration unit. Convert only for display/export.
 - Keep the seven-element `weeklyMinutes` array ordered oldest to newest according to the existing Nintendo mapping.
 - Keep credentials and the user-provided AI API key in Keychain with `AfterFirstUnlockThisDeviceOnly`. Never put them in SwiftData, UserDefaults, source files, fixtures, screenshots, or logs.

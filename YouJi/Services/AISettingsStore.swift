@@ -1,89 +1,78 @@
 import Foundation
 
-enum AIServicePreset: String, CaseIterable {
-    case celitech = "策量智算"
-    case custom = "自定义兼容服务"
-}
-
 enum AISettingsStore {
-    private static let apiKeyAccount = "ai-analysis-api-key"
-    private static let modelNameKey = "ai-analysis-model-name"
-    private static let endpointKey = "ai-analysis-endpoint"
-    static let defaultModelName = "deepseek-r1"
-    static let defaultEndpoint = "https://api.celitech.com.cn/v1/chat/completions"
+    private static let apiKeyAccount = "openai-api-key"
+    private static let modelNameKey = "openai-text-model"
+    private static let imageModelNameKey = "openai-image-model"
+    static let defaultModelName = "gpt-6-luna"
+    static let defaultImageModelName = "gpt-image-2.6-flare"
+    static let responsesURL = URL(string: "https://api.openai.com/v1/responses")!
+    static let imagesURL = URL(string: "https://api.openai.com/v1/images/generations")!
 
+    // Provider-scoped storage prevents an old service's key or model from being
+    // silently sent to OpenAI after updating the app.
     static var apiKey: String { KeychainStore.read(account: apiKeyAccount) ?? "" }
-
-    static var modelName: String {
-        let value = UserDefaults.standard.string(forKey: modelNameKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return value.isEmpty ? defaultModelName : value
-    }
+    static var modelName: String { model(forKey: modelNameKey, fallback: defaultModelName) }
+    static var imageModelName: String { model(forKey: imageModelNameKey, fallback: defaultImageModelName) }
 
     static var isConfigured: Bool {
-        (try? validate(apiKey: apiKey, modelName: modelName, endpoint: endpointString)) != nil
+        (try? validate(apiKey: apiKey, modelName: modelName, imageModelName: imageModelName)) != nil
     }
 
-    static var endpointString: String {
-        let value = UserDefaults.standard.string(forKey: endpointKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return value.isEmpty ? defaultEndpoint : value
+    private static func model(forKey key: String, fallback: String) -> String {
+        let value = UserDefaults.standard.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? fallback : value
     }
 
-    static var endpointURL: URL {
-        get throws { try validatedEndpoint(endpointString) }
+    static func validate(apiKey: String, modelName: String, imageModelName: String) throws {
+        try validateRequest(apiKey: apiKey, modelName: modelName)
+        try validateModel(imageModelName)
     }
 
-    static func validatedEndpoint(_ endpoint: String) throws -> URL {
-        let value = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty,
-              value.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
-              let components = URLComponents(string: value),
-              components.scheme?.lowercased() == "https",
-              let host = components.host, !host.isEmpty,
-              components.user == nil, components.password == nil,
-              components.query == nil, components.fragment == nil,
-              let url = components.url else {
-            throw AISettingsError.invalidEndpoint
-        }
-        return url
-    }
-
-    static func validate(apiKey: String, modelName: String, endpoint: String) throws -> URL {
-        let cleanKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanModel = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanKey.isEmpty else { throw AISettingsError.missingAPIKey }
-        guard cleanKey.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
+    static func validateRequest(apiKey: String, modelName: String) throws {
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { throw AISettingsError.missingAPIKey }
+        guard key.count <= 1_024, key.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
             throw AISettingsError.invalidAPIKey
         }
-        guard !cleanModel.isEmpty, cleanModel.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
+        try validateModel(modelName)
+    }
+
+    private static func validateModel(_ model: String) throws {
+        let name = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 200, name.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
             throw AISettingsError.invalidModel
         }
-        return try validatedEndpoint(endpoint)
     }
 
-    static func save(apiKey: String, modelName: String, endpoint: String) throws {
-        let url = try validate(apiKey: apiKey, modelName: modelName, endpoint: endpoint)
+    static func save(apiKey: String, modelName: String, imageModelName: String) throws {
+        try validate(apiKey: apiKey, modelName: modelName, imageModelName: imageModelName)
         try KeychainStore.save(apiKey.trimmingCharacters(in: .whitespacesAndNewlines), account: apiKeyAccount)
         UserDefaults.standard.set(modelName.trimmingCharacters(in: .whitespacesAndNewlines), forKey: modelNameKey)
-        UserDefaults.standard.set(url.absoluteString, forKey: endpointKey)
+        UserDefaults.standard.set(imageModelName.trimmingCharacters(in: .whitespacesAndNewlines), forKey: imageModelNameKey)
+        removeLegacyConfiguration()
     }
 
-    static func clearAPIKey() { KeychainStore.delete(account: apiKeyAccount) }
+    static func clearAPIKey() {
+        KeychainStore.delete(account: apiKeyAccount)
+        removeLegacyConfiguration()
+    }
+
+    static func removeLegacyConfiguration() {
+        KeychainStore.delete(account: "ai-analysis-api-key")
+        UserDefaults.standard.removeObject(forKey: "ai-analysis-model-name")
+        UserDefaults.standard.removeObject(forKey: "ai-analysis-endpoint")
+    }
 }
 
 enum AISettingsError: LocalizedError {
-    case invalidEndpoint
-    case missingAPIKey
-    case invalidAPIKey
-    case invalidModel
+    case missingAPIKey, invalidAPIKey, invalidModel
 
     var errorDescription: String? {
         switch self {
-        case .invalidEndpoint: "请填写完整的 HTTPS 接口地址，包含服务要求的路径；地址中不要放账号、密钥或查询参数。"
-        case .missingAPIKey: "请先填写所选服务的 API Key。密钥只会保存在这台设备。"
-        case .invalidAPIKey: "API Key 中包含空格或换行，请重新粘贴完整密钥。"
-        case .invalidModel: "请填写服务支持的完整模型名称，名称中不要包含空格或换行。"
+        case .missingAPIKey: "请先填写 OpenAI API Key。密钥只会保存在这台设备。"
+        case .invalidAPIKey: "API Key 格式不正确，请重新粘贴完整密钥，不要包含空格或换行。"
+        case .invalidModel: "请填写你的 OpenAI 账号可用的完整模型名称，不要包含空格或换行。"
         }
     }
 }

@@ -1667,6 +1667,9 @@ struct AIProfileHistoryView: View {
                                 }
                             }
                             .font(.caption.bold())
+                            if expandedProfileIDs.contains(profile.id) {
+                                AIProfileImageSection(profile: profile).id(profile.id)
+                            }
                         }
                         .padding(.vertical, 6)
                         .swipeActions {
@@ -1675,6 +1678,7 @@ struct AIProfileHistoryView: View {
                                 do {
                                     try LocalPersistence.transaction(modelContext) { writer in
                                         for stored in try writer.fetch(FetchDescriptor<AIProfileResult>(predicate: #Predicate { $0.id == id })) {
+                                            try AIImageService.deleteImages(ownerID: id, origin: .profile, in: writer)
                                             writer.delete(stored)
                                         }
                                     }
@@ -1752,7 +1756,7 @@ struct DataManagementView: View {
                         .foregroundStyle(YJColor.purple)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("这台设备共有 \(games.count) 款游戏记录").font(.subheadline.bold())
-                        Text("完整备份还包含同步历史、每日活动、日期分配和 AI 内容。")
+                        Text("完整备份还包含同步历史、每日活动、日期分配、AI 内容和图片。")
                             .font(.caption).foregroundStyle(YJColor.muted)
                     }
                 }
@@ -1767,7 +1771,7 @@ struct DataManagementView: View {
             } header: {
                 Text("导出")
             } footer: {
-                Text("完整备份包含游戏、同步历史、每日活动、日期分配和 AI 内容；不包含游戏平台登录信息、账号密码或 AI API Key。")
+                Text("完整备份包含游戏、同步历史、每日活动、日期分配、AI 内容和图片；不包含游戏平台登录信息、账号密码或 AI API Key。")
             }
             Section {
                 Button("从备份恢复") { isImporting = true }
@@ -1846,20 +1850,20 @@ struct PrivacyInfoView: View {
         List {
             Section("本机保存") {
                 Label("游戏记录与 Switch 每日活动", systemImage: "externaldrive.fill")
-                Label("AI 会话、人格历史、待玩清单和私人备注", systemImage: "iphone")
+                Label("AI 会话、人格历史、生成图片、待玩清单和私人备注", systemImage: "iphone")
                 Label("平台登录信息与 AI API Key 仅保存在这台设备", systemImage: "key.fill")
             }
             Section("何时联网") {
-                Text("只有你点击连接或同步时才请求游戏平台。只有你点击生成或发送消息时才请求模型服务。游迹不会自动同步，也不会在后台上传游戏库。")
+                Text("只有你点击连接或同步时才请求游戏平台。只有你点击分析、画图、发送或测试连接时才请求 OpenAI。游迹不会自动同步，也不会在后台上传游戏库。")
             }
             Section("发送给 AI") {
-                Text("人格分析仅发送当前筛选游戏的名称、平台、游玩时长和奖杯比例。聊天会发送开始对话时选用的游戏信息及当前对话。不会发送平台登录信息、账号标识、封面或私人备注。")
+                Text("人格分析仅发送当前筛选游戏的名称、平台、游玩时长和奖杯比例。聊天和绘图会发送开始对话时选用的游戏信息及当前对话；分析画像只使用选中的分析和画面偏好。不会发送平台登录信息、账号标识、封面或私人备注。")
             }
             Section("用户控制") {
                 Text("你可以导出完整本地备份、恢复备份、清除单个历史账号档案、删除全部本地内容、断开平台连接或清除 AI API Key。断开平台默认保留游戏历史。")
             }
             Section("第三方服务") {
-                Text("游戏平台服务调整时，连接或同步功能可能暂时不可用。AI 服务可在设置中更换；第三方如何处理请求受其各自条款约束。")
+                Text("游戏平台服务调整时，连接或同步功能可能暂时不可用。AI 直接连接 OpenAI，可在设置中更换文字和绘图模型。请求处理遵循各服务的政策。")
                 Link("查看完整隐私政策", destination: URL(string: "https://github.com/06wj/youji-ios/blob/main/docs/PRIVACY_POLICY.md")!)
             }
         }

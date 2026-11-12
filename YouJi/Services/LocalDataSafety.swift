@@ -64,6 +64,7 @@ enum LocalPersistence {
         if names.contains("PlayTimeAllocation") { _ = try? context.fetch(FetchDescriptor<PlayTimeAllocation>()) }
         if names.contains("DailyPlayActivity") { _ = try? context.fetch(FetchDescriptor<DailyPlayActivity>()) }
         if names.contains("AIConversation") { _ = try? context.fetch(FetchDescriptor<AIConversation>()) }
+        if names.contains("AIGeneratedImage") { _ = try? context.fetch(FetchDescriptor<AIGeneratedImage>()) }
         if names.contains("AIProfileResult") { _ = try? context.fetch(FetchDescriptor<AIProfileResult>()) }
         if names.contains("SavedGamePlan") { _ = try? context.fetch(FetchDescriptor<SavedGamePlan>()) }
         context.processPendingChanges()
@@ -106,6 +107,13 @@ enum LocalPersistence {
             copy(source, target, [\.createdAt, \.updatedAt])
             copy(source, target, [\.titleGeneratedAt])
             copy(source, target, [\.messagesData, \.gameContextData])
+            copy(source, target, [\.recentPlayContextData])
+            copy(source, target, [\.draftRequestsImage])
+        case let source as AIGeneratedImage:
+            let id = source.id
+            let registered: AIGeneratedImage? = context.registeredModel(for: source.persistentModelID)
+            guard let target = registered ?? (try? context.fetch(FetchDescriptor<AIGeneratedImage>(predicate: #Predicate { $0.id == id })).first) else { return }
+            copy(source, target, [\.accountScopeKey])
         case let source as AIProfileResult:
             guard let target: AIProfileResult = context.registeredModel(for: source.persistentModelID) else { return }
             copy(source, target, [\.id])

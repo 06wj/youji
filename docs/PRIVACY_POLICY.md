@@ -1,6 +1,6 @@
 # 游迹隐私政策 / YouJi Privacy Policy
 
-生效日期 / Effective date: 2026-08-13
+生效日期 / Effective date: 2026-11-13
 
 ## 简体中文
 
@@ -8,7 +8,7 @@
 
 ### 本机数据
 
-游戏记录、游玩时长、奖杯、同步快照、Switch 每日活动、封面缓存、私人备注、收藏、游玩状态、AI 会话、游戏人格和待玩清单默认保存在用户设备上。游迹不包含广告、跨应用跟踪或自建分析服务。
+游戏记录、游玩时长、奖杯、同步快照、Switch 每日活动、封面缓存、私人备注、收藏、游玩状态、AI 会话、游戏人格、生成的图片和待玩清单默认保存在用户设备上。游迹不包含广告、跨应用跟踪或自建分析服务。
 
 平台会话令牌和用户填写的 AI API Key 保存在 iOS Keychain；它们不会进入游戏数据库、完整备份、CSV 或诊断摘要。非敏感偏好和同步状态保存在 App 自身的 UserDefaults。
 
@@ -18,9 +18,11 @@
 
 ### AI 请求
 
-只有用户主动生成分析、发送聊天消息或测试连接时，游迹才会请求用户在设置中选择的 OpenAI Chat Completions 兼容服务。默认接口由策量智算提供，用户可以改为其他 HTTPS 兼容接口。
+只有用户主动生成分析、发送聊天消息、生成图片或测试连接时，游迹才会直接请求 OpenAI。用户在设置中提供自己的 OpenAI API Key，并选择文字与绘图模型。旧服务与自定义接口配置已移除。
 
-人格分析发送当前筛选游戏的名称、平台、累计时长和已有奖杯比例。聊天发送创建会话时冻结的同类游戏信息以及当前对话内容。游迹不会向模型服务发送游戏平台凭据、平台账号 ID、封面、私人备注或完整本地备份。模型服务对请求数据的保留和处理遵循该服务商自己的政策，用户应只配置自己信任的服务。
+人格分析发送当前筛选游戏的名称、平台、累计时长和已有奖杯比例。聊天发送创建会话时冻结的同类游戏信息、当前对话，以及发送时从本机读取的近 30 天游玩日期、分钟、奖杯变化和可用的同步观测区间；近期背景可包含短时游玩，不触发平台同步。游迹不会向模型服务发送游戏平台凭据、平台账号 ID、封面、私人备注或完整本地备份。聊天根据用户明确的画面请求选择调用 OpenAI 图片工具，共用同一游戏背景、对话文字和画面要求；分析画像发送选中的分析文本和画面偏好，不额外读取游戏库。请求数据的保留和处理遵循 OpenAI 的政策。
+
+生成图片保存在本机，并随完整 JSON 备份导出。只有点击“保存到相册”时才申请添加照片权限，不读取已有照片；分享由用户通过系统分享界面选择目的地。
 
 ### 导出、删除与通知
 
@@ -38,7 +40,7 @@ YouJi is a local-first personal game activity library. This policy explains how 
 
 ### On-device data
 
-Game records, play time, trophies, synchronization snapshots, Switch daily activity, cached covers, private notes, favorites, play status, AI conversations, generated profiles, and play plans are stored on the user's device by default. YouJi contains no advertising, cross-app tracking, or first-party analytics service.
+Game records, play time, trophies, synchronization snapshots, Switch daily activity, cached covers, private notes, favorites, play status, AI conversations, generated profiles and images, and play plans are stored on the user's device by default. YouJi contains no advertising, cross-app tracking, or first-party analytics service.
 
 Platform session tokens and the user's AI API key are stored in the iOS Keychain. They are never included in the game database, complete backup, CSV export, or diagnostic summary. Non-sensitive preferences and synchronization state are stored in app-only UserDefaults.
 
@@ -48,9 +50,11 @@ YouJi contacts PlayStation or Nintendo services only when the user explicitly co
 
 ### AI requests
 
-YouJi contacts the OpenAI Chat Completions-compatible service selected in Settings only when the user explicitly generates an analysis, sends a chat message, or tests the connection. The default endpoint is provided by Celitech; users may configure another compatible HTTPS endpoint.
+YouJi contacts OpenAI directly only when the user explicitly generates an analysis or image, sends a chat message, or tests the connection. Users provide their own OpenAI API key and select text and image models in Settings. The former service and custom endpoint configuration have been removed.
 
-Profile requests include the selected games' titles, platforms, cumulative play time, and available trophy ratios. Chat requests include the same categories of game information frozen when the conversation was created, plus the current conversation. YouJi does not send platform credentials, platform account IDs, covers, private notes, or a complete local backup to the model service. Request retention and processing are governed by the selected provider's policy, so users should configure only a provider they trust.
+Profile requests include the selected games' titles, platforms, cumulative play time, and available trophy ratios. Chat requests include the same categories of game information frozen when the conversation was created, plus the current conversation and the last 30 days of locally recorded play dates, minutes, trophy changes, and available synchronization intervals. Recent activity may include short sessions and does not trigger platform synchronization. YouJi does not send platform credentials, platform account IDs, covers, private notes, or a complete local backup to the model service. Chat may call the image tool when the user explicitly requests an image, using the same game background and conversation text; profile images use the selected analysis and the user's visual preferences. Request retention and processing are governed by OpenAI's policies.
+
+Generated images are stored locally and included in complete JSON backups. YouJi requests add-only Photos access only when the user taps Save to Photos; it does not read existing photos. Sharing uses the system share sheet and a destination selected by the user.
 
 ### Export, deletion, and notifications
 

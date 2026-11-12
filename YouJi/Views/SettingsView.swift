@@ -5,8 +5,7 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var apiKey: String
     @State private var modelName: String
-    @State private var endpoint: String
-    @State private var servicePreset: AIServicePreset
+    @State private var imageModelName: String
     @State private var showsAdvanced: Bool
     @State private var testTask: Task<Void, Never>?
     @State private var connectionSucceeded = false
@@ -25,10 +24,8 @@ struct SettingsView: View {
         self.onConfigured = onConfigured
         _apiKey = State(initialValue: AISettingsStore.apiKey)
         _modelName = State(initialValue: AISettingsStore.modelName)
-        _endpoint = State(initialValue: AISettingsStore.endpointString)
-        let usesPreset = AISettingsStore.endpointString == AISettingsStore.defaultEndpoint
-        _servicePreset = State(initialValue: usesPreset ? .celitech : .custom)
-        _showsAdvanced = State(initialValue: !usesPreset || AISettingsStore.modelName != AISettingsStore.defaultModelName)
+        _imageModelName = State(initialValue: AISettingsStore.imageModelName)
+        _showsAdvanced = State(initialValue: false)
     }
 
     var body: some View {
@@ -85,7 +82,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(prioritizesAIConfiguration ? "配置游戏大脑" : "管理游迹").font(.headline)
                 Text(prioritizesAIConfiguration
-                     ? "选好服务、填写密钥，保存后回到刚才的任务。"
+                     ? "填写 OpenAI 密钥，保存后回到刚才的任务。"
                      : "管理同步提醒、本地数据、隐私与 AI 服务。")
                     .font(.caption).foregroundStyle(YJColor.muted)
             }
@@ -101,31 +98,13 @@ struct SettingsView: View {
                 .font(.system(size: 9, weight: .black, design: .monospaced))
                 .tracking(1.2).foregroundStyle(YJColor.muted)
 
-            Picker("选择服务", selection: $servicePreset) {
-                ForEach(AIServicePreset.allCases, id: \.self) { preset in
-                    Text(preset.rawValue).tag(preset)
-                }
-            }
-            .tint(YJColor.lime).disabled(isTesting)
-            .onChange(of: servicePreset) { _, value in
-                saved = false
-                if value == .celitech {
-                    if endpoint != AISettingsStore.defaultEndpoint { apiKey = "" }
-                    endpoint = AISettingsStore.defaultEndpoint
-                    modelName = AISettingsStore.defaultModelName
-                } else {
-                    showsAdvanced = true
-                }
-            }
-
-            Text(servicePreset == .celitech
-                 ? "已填好现有服务预设。你需要该服务自己的 API Key；账户和用量由服务商管理。"
-                 : "使用你自己的 HTTPS Chat Completions 兼容服务，填写完整接口地址及模型名称。")
+            Label("OpenAI", systemImage: "sparkles").font(.headline)
+            Text("聊天、游戏分析和绘图均使用你的 OpenAI API 账号，费用计入该账号的 API 用量。")
                 .font(.caption).foregroundStyle(YJColor.muted).lineSpacing(3)
 
             VStack(alignment: .leading, spacing: 7) {
                 Text("API Key").font(.caption.bold()).foregroundStyle(YJColor.muted)
-                SecureField("粘贴所选服务的 API Key", text: $apiKey)
+                SecureField("粘贴 OpenAI API Key", text: $apiKey)
                     .disabled(isTesting)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -134,34 +113,31 @@ struct SettingsView: View {
                     .font(.caption2).foregroundStyle(YJColor.muted)
             }
 
-            DisclosureGroup("接口与模型（高级）", isExpanded: $showsAdvanced) {
+            DisclosureGroup("文字与绘图模型", isExpanded: $showsAdvanced) {
                 VStack(alignment: .leading, spacing: 14) {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("完整接口地址").font(.caption.bold()).foregroundStyle(YJColor.muted)
-                        TextField(AISettingsStore.defaultEndpoint, text: $endpoint, axis: .vertical)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled().keyboardType(.URL)
-                            .padding(13).background(YJColor.paper, in: RoundedRectangle(cornerRadius: 12))
-                        Text("通常以 /v1/chat/completions 结尾；不要只填写网站首页，也不要把密钥放在地址中。")
-                            .font(.caption2).foregroundStyle(YJColor.muted)
-                    }
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("模型名称").font(.caption.bold()).foregroundStyle(YJColor.muted)
+                        Text("文字模型").font(.caption.bold()).foregroundStyle(YJColor.muted)
                         TextField(AISettingsStore.defaultModelName, text: $modelName)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                             .padding(13).background(YJColor.paper, in: RoundedRectangle(cornerRadius: 12))
-                        Text("填写服务支持的标准名称，区分大小写。")
+                        Text("用于聊天、分析及对话标题；需支持 Responses API 的绘图工具。")
                             .font(.caption2).foregroundStyle(YJColor.muted)
                     }
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("绘图模型").font(.caption.bold()).foregroundStyle(YJColor.muted)
+                        TextField(AISettingsStore.defaultImageModelName, text: $imageModelName)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .padding(13).background(YJColor.paper, in: RoundedRectangle(cornerRadius: 12))
+                        Text("用于聊天画图和分析画像，需要账号具有该模型的使用权限。")
+                            .font(.caption2).foregroundStyle(YJColor.muted)
+                    }
+                    Link("查看 OpenAI 模型", destination: URL(string: "https://developers.openai.com/api/docs/models")!)
                 }.padding(.top, 10)
             }
             .font(.subheadline.bold()).disabled(isTesting)
 
-            if let host = URLComponents(string: endpoint)?.host {
-                Text("发送至 \(host) · 模型 \(modelName)")
-                    .font(.caption2).foregroundStyle(YJColor.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text("发送至 api.openai.com")
+                .font(.caption2).foregroundStyle(YJColor.muted)
 
             VStack(spacing: 10) {
                 Button(action: save) {
@@ -179,7 +155,7 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered).disabled(isTesting)
-                Text("保存配置不会发送游戏数据。测试会向所选服务发送一条简短测试消息，可能消耗少量额度。")
+                Text("保存配置不会发送游戏数据。测试会向 OpenAI 发送一条简短文字消息，可能消耗少量额度；不会生成图片。")
                     .font(.caption2).foregroundStyle(YJColor.muted)
             }
 
@@ -197,7 +173,7 @@ struct SettingsView: View {
         }
         .onChange(of: apiKey) { _, _ in saved = false }
         .onChange(of: modelName) { _, _ in saved = false }
-        .onChange(of: endpoint) { _, _ in saved = false }
+        .onChange(of: imageModelName) { _, _ in saved = false }
         .padding(17)
         .youjiCard()
     }
@@ -255,7 +231,7 @@ struct SettingsView: View {
     private var privacy: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "lock.shield.fill").foregroundStyle(YJColor.purple)
-            Text("API Key 只保存在这台设备。发起分析或聊天时，只会向模型服务发送必要的游戏信息和当前对话。")
+            Text("API Key 只保存在这台设备。仅在你主动分析、发送或生成图片时向 OpenAI 发送必要内容。生成的图片保存在本机，并随完整备份导出。")
                 .font(.caption).foregroundStyle(YJColor.muted).lineSpacing(3)
         }
         .padding(16)
@@ -273,10 +249,10 @@ struct SettingsView: View {
     }
 
     private func persistConfiguration() throws {
-        try AISettingsStore.save(apiKey: apiKey, modelName: modelName, endpoint: endpoint)
+        try AISettingsStore.save(apiKey: apiKey, modelName: modelName, imageModelName: imageModelName)
         apiKey = AISettingsStore.apiKey
         modelName = AISettingsStore.modelName
-        endpoint = AISettingsStore.endpointString
+        imageModelName = AISettingsStore.imageModelName
     }
 
     private func finishConfiguration() {

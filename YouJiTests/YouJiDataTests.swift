@@ -265,6 +265,7 @@ final class YouJiDataTests: XCTestCase {
             AIProfileResult.self,
             SavedGamePlan.self,
             PlayTimeAllocation.self,
+            AIGeneratedImage.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let context = container.mainContext
@@ -699,6 +700,7 @@ final class YouJiDataTests: XCTestCase {
             AIProfileResult.self,
             SavedGamePlan.self,
             PlayTimeAllocation.self,
+            AIGeneratedImage.self,
             configurations: configuration
         )
         let context = source.mainContext
@@ -757,6 +759,7 @@ final class YouJiDataTests: XCTestCase {
             AIProfileResult.self,
             SavedGamePlan.self,
             PlayTimeAllocation.self,
+            AIGeneratedImage.self,
             configurations: targetConfiguration
         )
         let staleConversation = AIConversation(
@@ -832,6 +835,7 @@ final class YouJiDataTests: XCTestCase {
             AIProfileResult.self,
             SavedGamePlan.self,
             PlayTimeAllocation.self,
+            AIGeneratedImage.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let oldGame = GameRecord(
@@ -856,6 +860,7 @@ final class YouJiDataTests: XCTestCase {
             AIProfileResult.self,
             SavedGamePlan.self,
             PlayTimeAllocation.self,
+            AIGeneratedImage.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let newerGame = GameRecord(
@@ -888,6 +893,7 @@ final class YouJiDataTests: XCTestCase {
             AIProfileResult.self,
             SavedGamePlan.self,
             PlayTimeAllocation.self,
+            AIGeneratedImage.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let backedUpGame = GameRecord(
@@ -914,6 +920,7 @@ final class YouJiDataTests: XCTestCase {
             AIProfileResult.self,
             SavedGamePlan.self,
             PlayTimeAllocation.self,
+            AIGeneratedImage.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let legacyGame = GameRecord(
@@ -949,6 +956,7 @@ final class YouJiDataTests: XCTestCase {
             AIProfileResult.self,
             SavedGamePlan.self,
             PlayTimeAllocation.self,
+            AIGeneratedImage.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let backedUpGame = GameRecord(
@@ -975,6 +983,7 @@ final class YouJiDataTests: XCTestCase {
             AIProfileResult.self,
             SavedGamePlan.self,
             PlayTimeAllocation.self,
+            AIGeneratedImage.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let freshlySyncedGame = GameRecord(

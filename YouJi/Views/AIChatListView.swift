@@ -166,7 +166,8 @@ struct AIChatListView: View {
         guard !chatGames.isEmpty else { return }
         do {
             let conversation = try AIConversationActions.create(
-                accountScope: accountScopeKey, games: chatGames, draft: draft, in: modelContext
+                accountScope: accountScopeKey, games: chatGames, draft: draft,
+                recentPlay: AIRecentPlayContextBuilder.capture(accountScope: accountScopeKey, in: modelContext), in: modelContext
             )
             path.append(conversation.id)
         } catch {
@@ -178,6 +179,7 @@ struct AIChatListView: View {
         guard let conversationToDelete else { return }
         LocalDataRevision.invalidate()
         do { try LocalPersistence.transaction(modelContext) { writer in
+            try AIImageService.deleteImages(ownerID: conversationToDelete.id, origin: .conversation, in: writer)
             writer.delete(try LocalPersistence.conversation(conversationToDelete.id, in: writer))
         } }
         catch {
@@ -208,12 +210,36 @@ struct AIChatListView: View {
 
 @MainActor
 enum AIConversationActions {
+    static func persistMessages(_ id: UUID, messages: [AIChatMessage], expecting: [AIChatMessage],
+                                draft: String, requestsImage: Bool, provisionalTitle: String? = nil,
+                                recentPlay: AIRecentPlayContext? = nil,
+                                revision: UUID, in context: ModelContext) throws {
+        try LocalDataRevision.check(revision)
+        let recentData = try recentPlay?.encoded()
+        try LocalPersistence.transaction(context) { writer in
+            let stored = try LocalPersistence.conversation(id, in: writer)
+            guard try stored.readMessages() == expecting else { throw AIConversationWriteError.changed }
+            if stored.messages != messages { stored.messages = messages }
+            stored.updateDraft(draft, requestsImage: requestsImage)
+            if let recentData { stored.recentPlayContextData = recentData }
+            if let provisionalTitle, stored.titleGeneratedAt == nil, stored.title == "新对话" {
+                stored.title = provisionalTitle
+                stored.updatedAt = .now
+            }
+        }
+    }
+
     /// Never expose the disposable writer's model to a SwiftUI destination.
-    static func create(accountScope: String, games: [AIAnalysisGame], draft: String,
+    static func create(accountScope: String, games: [AIAnalysisGame], draft: String, requestsImage: Bool = false,
+                       recentPlay: AIRecentPlayContext? = nil,
                        in context: ModelContext) throws -> AIConversation {
         let id = UUID()
+        let recentData = try recentPlay?.encoded()
         try LocalPersistence.transaction(context) { writer in
-            writer.insert(AIConversation(id: id, accountScopeKey: accountScope, games: games, draft: draft))
+            let conversation = AIConversation(id: id, accountScopeKey: accountScope, games: games, draft: draft)
+            conversation.draftRequestsImage = requestsImage
+            conversation.recentPlayContextData = recentData
+            writer.insert(conversation)
         }
         return try LocalPersistence.conversation(id, in: context)
     }
@@ -229,6 +255,10 @@ enum AIConversationActions {
             for conversation in legacy {
                 conversation.accountScopeKey = scope
                 conversation.updatedAt = migratedAt
+            }
+            for image in try writer.fetch(FetchDescriptor<AIGeneratedImage>())
+                where image.accountScopeKey.isEmpty && image.originRaw == "conversation" && migratedIDs.contains(image.ownerID) {
+                image.accountScopeKey = scope
             }
             for plan in try writer.fetch(FetchDescriptor<SavedGamePlan>()) where plan.accountScopeKey.isEmpty {
                 guard let sourceID = UUID(uuidString: plan.sourceConversationID), migratedIDs.contains(sourceID) else { continue }

@@ -13,6 +13,7 @@ struct YouJiBackup: Codable {
     let profiles: [BackupProfile]
     let plans: [BackupPlan]
     var playTimeAllocations: [PlayTimeAllocationValue] = []
+    var generatedImages: [BackupGeneratedImage] = []
 }
 
 struct BackupGame: Codable {
@@ -74,6 +75,20 @@ struct BackupConversation: Codable {
     var rawMessagesData: Data? = nil
     var rawGameContextData: Data? = nil
     var draft: String? = nil
+    var draftRequestsImage: Bool? = nil
+    var recentPlayContext: AIRecentPlayContext? = nil
+    var rawRecentPlayContextData: Data? = nil
+}
+
+struct BackupGeneratedImage: Codable {
+    let id: UUID
+    let accountScopeKey: String
+    let ownerID: UUID
+    let origin: AIGeneratedImage.Origin
+    let createdAt: Date
+    let prompt: String
+    let modelName: String
+    let pngData: Data
 }
 
 struct BackupProfile: Codable {
@@ -224,7 +239,10 @@ enum ProductDataService {
                 games: $0.games,
                 rawMessagesData: (try? $0.readMessages()) == nil ? $0.messagesData : nil,
                 rawGameContextData: (try? $0.readGames()) == nil ? $0.gameContextData : nil,
-                draft: $0.draft
+                draft: $0.draft,
+                draftRequestsImage: $0.draftRequestsImage,
+                recentPlayContext: try? $0.readRecentPlayContext(),
+                rawRecentPlayContextData: (try? $0.readRecentPlayContext()) == nil ? $0.recentPlayContextData : nil
             )
         }
         let profiles = try modelContext.fetch(FetchDescriptor<AIProfileResult>()).map {
@@ -254,7 +272,7 @@ enum ProductDataService {
             )
         }
         return YouJiBackup(
-            formatVersion: 3,
+            formatVersion: 4,
             createdAt: .now,
             games: games,
             snapshots: snapshots,
@@ -262,7 +280,12 @@ enum ProductDataService {
             conversations: conversations,
             profiles: profiles,
             plans: plans,
-            playTimeAllocations: try modelContext.fetch(FetchDescriptor<PlayTimeAllocation>()).map { try $0.readValue() }
+            playTimeAllocations: try modelContext.fetch(FetchDescriptor<PlayTimeAllocation>()).map { try $0.readValue() },
+            generatedImages: try modelContext.fetch(FetchDescriptor<AIGeneratedImage>()).map {
+                guard let origin = AIGeneratedImage.Origin(rawValue: $0.originRaw) else { throw AIAnalysisError.invalidImage }
+                return BackupGeneratedImage(id: $0.id, accountScopeKey: $0.accountScopeKey, ownerID: $0.ownerID,
+                    origin: origin, createdAt: $0.createdAt, prompt: $0.prompt, modelName: $0.modelName, pngData: $0.pngData)
+            }
         )
     }
 
@@ -287,7 +310,7 @@ enum ProductDataService {
             return date
         }
         let backup = try decoder.decode(YouJiBackup.self, from: data)
-        guard (1...3).contains(backup.formatVersion) else { throw ProductDataError.unsupportedBackup }
+        guard (1...4).contains(backup.formatVersion) else { throw ProductDataError.unsupportedBackup }
         try validate(backup, modelContext: modelContext)
         LocalDataRevision.invalidate()
         return try LocalPersistence.transaction(modelContext) { modelContext in
@@ -396,6 +419,8 @@ enum ProductDataService {
                                               accountScopeKey: item.accountScopeKey, games: item.games)
                 imported.messages = item.messages
                 imported.draft = item.draft ?? ""
+                imported.draftRequestsImage = item.draftRequestsImage ?? false
+                imported.recentPlayContextData = try item.rawRecentPlayContextData ?? item.recentPlayContext?.encoded()
                 if let raw = item.rawMessagesData { imported.messagesData = raw }
                 if let raw = item.rawGameContextData { imported.gameContextData = raw }
                 imported.updatedAt = item.updatedAt
@@ -426,6 +451,10 @@ enum ProductDataService {
                 // older format; never erase newer text or move it across scopes.
                 if isNewer, local.accountScopeKey == item.accountScopeKey, let draft = item.draft {
                     local.draft = draft
+                    if let requestsImage = item.draftRequestsImage { local.draftRequestsImage = requestsImage }
+                }
+                if isNewer, local.accountScopeKey == item.accountScopeKey, let recentData = imported.recentPlayContextData {
+                    local.recentPlayContextData = recentData
                 }
                 local.updatedAt = max(oldDate, item.updatedAt)
             }
@@ -453,6 +482,11 @@ enum ProductDataService {
                 if existingProfiles[item.id] == nil { modelContext.insert(profile) }
             }
 
+            let imageIDs = Set(try modelContext.fetch(FetchDescriptor<AIGeneratedImage>()).map(\.id))
+            for image in backup.generatedImages where !imageIDs.contains(image.id) {
+                modelContext.insert(AIGeneratedImage(id: image.id, accountScopeKey: image.accountScopeKey, ownerID: image.ownerID,
+                    origin: image.origin, createdAt: image.createdAt, prompt: image.prompt, modelName: image.modelName, pngData: image.pngData))
+            }
             let existingPlans = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<SavedGamePlan>()).map { ($0.id, $0) })
             for item in backup.plans {
                 let importedUpdatedAt = item.updatedAt ?? item.createdAt
@@ -549,6 +583,10 @@ enum ProductDataService {
                 where AccountScope.contains(conversation.accountScopeKey, platform: platform, accountID: accountID) {
                 modelContext.delete(conversation)
             }
+            for image in try modelContext.fetch(FetchDescriptor<AIGeneratedImage>())
+                where AccountScope.contains(image.accountScopeKey, platform: platform, accountID: accountID) {
+                modelContext.delete(image)
+            }
             for profile in try modelContext.fetch(FetchDescriptor<AIProfileResult>())
                 where AccountScope.contains(profile.accountScopeKey, platform: platform, accountID: accountID) {
                 modelContext.delete(profile)
@@ -568,6 +606,7 @@ enum ProductDataService {
             for item in try modelContext.fetch(FetchDescriptor<PlayTimeAllocation>()) { modelContext.delete(item) }
             for item in try modelContext.fetch(FetchDescriptor<DailyPlayActivity>()) { modelContext.delete(item) }
             for item in try modelContext.fetch(FetchDescriptor<AIConversation>()) { modelContext.delete(item) }
+            for item in try modelContext.fetch(FetchDescriptor<AIGeneratedImage>()) { modelContext.delete(item) }
             for item in try modelContext.fetch(FetchDescriptor<AIProfileResult>()) { modelContext.delete(item) }
             for item in try modelContext.fetch(FetchDescriptor<SavedGamePlan>()) { modelContext.delete(item) }
         }
@@ -857,7 +896,7 @@ enum ProfileShareCardService {
 
 extension YouJiBackup {
     enum CodingKeys: String, CodingKey {
-        case formatVersion, createdAt, games, snapshots, dailyActivities, conversations, profiles, plans, playTimeAllocations
+        case formatVersion, createdAt, games, snapshots, dailyActivities, conversations, profiles, plans, playTimeAllocations, generatedImages
     }
 
     init(from decoder: Decoder) throws {
@@ -871,6 +910,7 @@ extension YouJiBackup {
         profiles = try values.decodeIfPresent([BackupProfile].self, forKey: .profiles) ?? []
         plans = try values.decodeIfPresent([BackupPlan].self, forKey: .plans) ?? []
         playTimeAllocations = try values.decodeIfPresent([PlayTimeAllocationValue].self, forKey: .playTimeAllocations) ?? []
+        generatedImages = try values.decodeIfPresent([BackupGeneratedImage].self, forKey: .generatedImages) ?? []
     }
 }
 
@@ -938,6 +978,7 @@ extension ProductDataService {
         try unique(backup.profiles.map(\.id))
         try unique(backup.plans.map(\.id))
         try unique(backup.playTimeAllocations.map(\.id))
+        try unique(backup.generatedImages.map(\.id))
 
         var identities: [String: BackupIdentity] = [:]
         var dayKeyCalendar = Calendar(identifier: .gregorian)
@@ -1015,6 +1056,11 @@ extension ProductDataService {
         for item in backup.conversations {
             try unique(item.messages.map(\.id))
             try require(item.games.allSatisfy { DataValidation.minutes($0.totalMinutes) }, "对话中的时长超出范围")
+            do {
+                try item.recentPlayContext?.validate()
+                // Preserve opaque damaged context for recovery. readRecentPlayContext
+                // validates it again before a retry can send it to OpenAI.
+            } catch { throw ProductDataError.invalidBackup("对话中的近期游玩记录不完整") }
         }
         for item in backup.profiles {
             try require(item.minimumHours >= 0 && item.minimumHours <= DataValidation.maximumMinutes / 60 && item.gameCount >= 0 && DataValidation.minutes(item.totalMinutes), "人格记录数值超出范围")
@@ -1022,6 +1068,38 @@ extension ProductDataService {
         let localConversations = try modelContext.fetch(FetchDescriptor<AIConversation>())
         var conversationScopes = Dictionary(uniqueKeysWithValues: localConversations.map { ($0.id, $0.accountScopeKey) })
         for conversation in backup.conversations { conversationScopes[conversation.id] = conversation.accountScopeKey }
+        var profileScopes = Dictionary(uniqueKeysWithValues: try modelContext.fetch(FetchDescriptor<AIProfileResult>()).map { ($0.id, $0.accountScopeKey) })
+        for profile in backup.profiles { profileScopes[profile.id] = profile.accountScopeKey }
+        let localImages = try modelContext.fetch(FetchDescriptor<AIGeneratedImage>())
+        for image in localImages {
+            let ownerScope = image.originRaw == "conversation" ? conversationScopes[image.ownerID] : profileScopes[image.ownerID]
+            try require(ownerScope == image.accountScopeKey, "恢复会改变已有 AI 图片的账号归属")
+        }
+        var imageOwners = Dictionary(uniqueKeysWithValues: localImages.map { ($0.id, ($0.ownerID, $0.originRaw, $0.accountScopeKey)) })
+        for image in backup.generatedImages {
+            let ownerScope = image.origin == .conversation ? conversationScopes[image.ownerID] : profileScopes[image.ownerID]
+            try require(ownerScope == image.accountScopeKey, "AI 图片与聊天或分析的归属不一致")
+            try require(!image.modelName.isEmpty && image.modelName.count <= 200 && image.prompt.count <= 32_000, "AI 图片的生成信息不完整")
+            do { try AIImageValidation.validate(image.pngData) }
+            catch { throw ProductDataError.invalidBackup("AI 图片数据无法读取或超出大小限制") }
+            if let local = localImages.first(where: { $0.id == image.id }) {
+                try require(local.ownerID == image.ownerID && local.originRaw == image.origin.rawValue
+                    && local.accountScopeKey == image.accountScopeKey && local.pngData == image.pngData
+                    && local.prompt == image.prompt && local.modelName == image.modelName, "AI 图片标识与本地内容冲突")
+            }
+            imageOwners[image.id] = (image.ownerID, image.origin.rawValue, image.accountScopeKey)
+        }
+        for conversation in backup.conversations {
+            let messages = conversation.rawMessagesData.flatMap { try? JSONDecoder().decode([AIChatMessage].self, from: $0) }
+                ?? conversation.messages
+            for message in messages {
+                if let id = message.imageID {
+                    guard let owner = imageOwners[id] else { throw ProductDataError.invalidBackup("聊天引用的图片不在备份或本机中") }
+                    try require(message.role == .assistant && owner.0 == conversation.id && owner.1 == "conversation"
+                        && owner.2 == conversation.accountScopeKey, "聊天图片的归属不一致")
+                }
+            }
+        }
         for item in backup.plans {
             if let gameID = item.gameID, !gameID.isEmpty {
                 if let game = identities[gameID] {

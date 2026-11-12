@@ -6,6 +6,8 @@ import UniformTypeIdentifiers
 struct YouJiApp: App {
     @StateObject private var database = LocalDatabaseState()
 
+    init() { AISettingsStore.removeLegacyConfiguration() }
+
     var body: some Scene {
         WindowGroup {
             #if DEBUG
@@ -56,7 +58,7 @@ final class LocalDatabaseState: ObservableObject {
 
     static var schema: Schema {
         Schema([GameRecord.self, PlaySnapshot.self, DailyPlayActivity.self, PlayTimeAllocation.self,
-                AIConversation.self, AIProfileResult.self, SavedGamePlan.self])
+                AIConversation.self, AIProfileResult.self, SavedGamePlan.self, AIGeneratedImage.self])
     }
 
     init(storeURL: URL? = nil) {

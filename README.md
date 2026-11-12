@@ -51,7 +51,13 @@ Use the games you genuinely invested in to uncover your core preferences, depth 
 
 No spreadsheets, pasted lists, or repeated explanations. Ask why Soulslikes resonate with you, which game deserves another playthrough, or what to start next. YouJi answers from your own history and keeps the conversation coherent as you follow up.
 
+### Turn your game profile into an image
+
+Ask for an image directly in the chat composer, or generate a **game portrait** from a saved personality analysis. Chat automatically chooses a text reply or an image tool call; no mode switch is needed. Images stay with their conversation or profile, can be saved to Photos or shared, and are included in complete backups. Generation is always explicit and uses your OpenAI API quota. Chat drawing creates a new image from text context; it does not edit the pixels of earlier images. Chat uses a compact layout with smaller default text that still respects Dynamic Type.
+
 ### Keep the conversations worth returning to
+
+Each new message also captures the latest 30 days of local play activity, including dates, minutes, short sessions, and available trophy changes. Known daily activity and PlayStation synchronization intervals are distinguished, and your PS date allocations take precedence without double-counting. This reads local history only; retrying a message reuses its original activity snapshot.
 
 Chats are saved locally and organized into easy-to-find topics. Continue an existing conversation, start a new one, or delete anything you no longer need.
 
@@ -78,7 +84,7 @@ Chats are saved locally and organized into easy-to-find topics. Continue an exis
 3. Open Game Brain to generate a profile or talk through what to play next.
 
 AI features use your own model configuration, which you can add in Settings the first time you use them.
-The default preset uses Celitech's OpenAI-compatible endpoint. Advanced settings support a custom HTTPS Chat Completions-compatible endpoint and model. Save and return to the original task, or explicitly test the connection; saving alone sends no game data.
+YouJi connects directly to OpenAI. Enter your own OpenAI API key in Settings and configure text and image models separately (defaults: `gpt-6-luna` and `gpt-image-2.6-flare`). The former service and custom endpoint configuration have been removed; its key is not reused. Saving sends no game data, and the connection test sends only a short text request.
 
 Game Brain reopens your latest saved profile and its original filters. Profile follow-ups and short-session/replay prompts create editable drafts; sending remains explicit. Chats preserve drafts and their original game snapshot, and can start a new conversation with updated local records. Saved suggestions can be read in full, edited, linked to a game, and used to mark that game as playing.
 
@@ -90,8 +96,8 @@ Game Brain reopens your latest saved profile and its original filters. Profile f
 - The AI receives only the information needed for the analysis or conversation, never your platform credentials.
 - AI conversations are separated by the local account scope, personality results can be revisited and shared as image cards, and useful replies can be saved to a local play/replay list.
 - Complete backups never include platform credentials or the AI API key.
-- Backup v3 adds PlayStation date allocations and their reset history. It also carries chat drafts, plan links, profile input fingerprints, and stable Switch window dates; older backups remain readable.
-- Backup v3 preserves unreadable conversation data and still imports v1/v2 backups. Restore validates account identities before writing and can repair damaged conversation components from an older readable backup.
+- Backup v4 adds generated images and image drafts while preserving PlayStation date allocations and reset history. It also carries chat drafts, plan links, profile input fingerprints, and stable Switch window dates; older backups remain readable.
+- Backup v4 preserves unreadable conversation data and still imports v1/v2/v3 backups. Restore validates account identities before writing and can repair damaged conversation components from an older readable backup.
 - Failed writes leave the visible archive unchanged. Deleting, disconnecting, or restoring invalidates older in-flight requests so they cannot repopulate the archive.
 - If the database cannot open, a recovery screen lets you export its original files or restore a JSON backup into a new database while keeping the original. A raw recovery package preserves files for recovery work; it is not a JSON backup.
 
