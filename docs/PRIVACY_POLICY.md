@@ -20,7 +20,7 @@
 
 只有用户主动生成分析、发送聊天消息、生成图片或测试连接时，游迹才会直接请求 OpenAI。用户在设置中提供自己的 OpenAI API Key，并选择文字与绘图模型。旧服务与自定义接口配置已移除。
 
-人格分析发送当前筛选游戏的名称、平台、累计时长和已有奖杯比例。聊天发送创建会话时冻结的同类游戏信息、当前对话，以及发送时从本机读取的近 30 天游玩日期、分钟、奖杯变化和可用的同步观测区间；近期背景可包含短时游玩，不触发平台同步。游迹不会向模型服务发送游戏平台凭据、平台账号 ID、封面、私人备注或完整本地备份。聊天根据用户明确的画面请求选择调用 OpenAI 图片工具，共用同一游戏背景、对话文字和画面要求；分析画像发送选中的分析文本和画面偏好，不额外读取游戏库。请求数据的保留和处理遵循 OpenAI 的政策。
+人格分析发送当前筛选游戏的名称、平台、累计时长和已有奖杯比例。聊天发送当前对话。只有模型需要游戏数据时，游迹才查询该对话对应的本机档案，并发送相关结果，其中可能包含游戏、平台、最终分配的游玩日期与分钟、奖杯数据或汇总。查询在本机完成。平台凭据、账号 ID、封面、私人备注和完整备份保存在设备上。聊天可按用户明确的绘图请求调用 OpenAI 图片工具。分析画像使用选中的分析和画面偏好。请求数据的保留和处理遵循 OpenAI 的政策。
 
 生成图片保存在本机，并随完整 JSON 备份导出。只有点击“保存到相册”时才申请添加照片权限，不读取已有照片；分享由用户通过系统分享界面选择目的地。
 
@@ -52,7 +52,7 @@ YouJi contacts PlayStation or Nintendo services only when the user explicitly co
 
 YouJi contacts OpenAI directly only when the user explicitly generates an analysis or image, sends a chat message, or tests the connection. Users provide their own OpenAI API key and select text and image models in Settings. The former service and custom endpoint configuration have been removed.
 
-Profile requests include the selected games' titles, platforms, cumulative play time, and available trophy ratios. Chat requests include the same categories of game information frozen when the conversation was created, plus the current conversation and the last 30 days of locally recorded play dates, minutes, trophy changes, and available synchronization intervals. Recent activity may include short sessions and does not trigger platform synchronization. YouJi does not send platform credentials, platform account IDs, covers, private notes, or a complete local backup to the model service. Chat may call the image tool when the user explicitly requests an image, using the same game background and conversation text; profile images use the selected analysis and the user's visual preferences. Request retention and processing are governed by OpenAI's policies.
+Profile requests include the selected games' titles, platforms, cumulative play time, and available trophy ratios. Chat sends the current conversation. When the model needs game data, YouJi queries the conversation's local archive and sends the relevant results. These may include game titles, platforms, final allocated play dates and minutes, trophy data, or aggregates. Queries run on the device. Platform credentials, account IDs, covers, private notes, and complete backups stay on the device. Chat may call the image tool when explicitly requested. Profile images use the selected analysis and visual preferences. Request retention and processing follow OpenAI's policies.
 
 Generated images are stored locally and included in complete JSON backups. YouJi requests add-only Photos access only when the user taps Save to Photos; it does not read existing photos. Sharing uses the system share sheet and a destination selected by the user.
 

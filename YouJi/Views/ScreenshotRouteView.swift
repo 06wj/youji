@@ -85,7 +85,7 @@ struct ScreenshotRouteView: View {
             WeeklyReviewView(review: .make(games: currentGames, snapshots: snapshots, activities: activities,
                 allocations: PlayTimeResolver.values(playTimeAllocations)), accountScopeKey: accountScopeKey)
         case .aiDraft:
-            AIChatListView(games: currentGames, accountScopeKey: accountScopeKey,
+            AIChatListView(accountScopeKey: accountScopeKey,
                            initialDraft: DesignPreviewData.isEnabled ? AIPrompts.shortSessionDraft : nil)
         case .aiSettings:
             SettingsView(prioritizesAIConfiguration: true)
@@ -145,14 +145,14 @@ struct ScreenshotRouteView: View {
         case .aiProfileHistory:
             AIProfileHistoryView(accountScopeKey: accountScopeKey)
         case .aiChatList:
-            AIChatListView(games: currentGames, accountScopeKey: accountScopeKey)
+            AIChatListView(accountScopeKey: accountScopeKey)
         case .aiChat:
             if let currentConversation {
                 NavigationStack {
                     AIChatView(conversation: currentConversation)
                 }
             } else {
-                AIChatListView(games: currentGames, accountScopeKey: accountScopeKey)
+                AIChatListView(accountScopeKey: accountScopeKey)
             }
         case .dataManagement:
             NavigationStack {
@@ -225,11 +225,10 @@ enum DesignPreviewData {
             }
         }
         let scope = AccountScope.key(playStationAccountID: "preview", nintendoAccountID: "preview")
-        let conversation = AIConversation(title: "下一场冒险，去哪里？", accountScopeKey: scope,
-            games: AIGameContext.snapshot(games))
+        let conversation = AIConversation(title: "下一场冒险，去哪里？", accountScopeKey: scope)
         conversation.messages = [
             AIChatMessage(role: .user, content: "为什么我总是想回到交界地？"),
-            AIChatMessage(role: .assistant, content: "你喜欢的，是自己找到答案的那一刻。\n\n从《艾尔登法环》到《空洞骑士》，你的记录里总有一条共同的线索：愿意为了好奇心，走进一个陌生的世界。\n\n下一次重温，不妨放下攻略，选一条从没走过的小路。")
+            AIChatMessage(role: .assistant, content: "你喜欢的，是自己找到答案的那一刻。\n\n从《艾尔登法环》到《空洞骑士》，你的记录里总有一条共同的线索：愿意为了好奇心，走进一个陌生的世界。\n\n下一次重温，不妨放下攻略，选一条从没走过的小路。", usedLocalRecords: true)
         ]
         container.mainContext.insert(conversation)
         let profile = AIProfileResult(accountScopeKey: scope, platformFilter: "全部", minimumHours: 1,

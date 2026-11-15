@@ -71,13 +71,30 @@ struct BackupConversation: Codable {
     let titleGeneratedAt: Date?
     let accountScopeKey: String
     let messages: [AIChatMessage]
-    let games: [AIAnalysisGame]
+    // Keep the empty member for earlier v4 readers.
+    var games: [AIAnalysisGame] = []
+    var usesLocalQueries = true
     var rawMessagesData: Data? = nil
-    var rawGameContextData: Data? = nil
     var draft: String? = nil
     var draftRequestsImage: Bool? = nil
-    var recentPlayContext: AIRecentPlayContext? = nil
-    var rawRecentPlayContextData: Data? = nil
+}
+
+private struct BackupConversationEntry: Decodable {
+    let conversation: BackupConversation?
+    let discardedID: UUID?
+
+    init(from decoder: Decoder) throws {
+        let values = try? decoder.container(keyedBy: Key.self)
+        if (try? values?.decode(Bool.self, forKey: .usesLocalQueries)) == true {
+            conversation = try BackupConversation(from: decoder)
+            discardedID = nil
+        } else {
+            conversation = nil
+            discardedID = try? values?.decode(UUID.self, forKey: .id)
+        }
+    }
+
+    private enum Key: String, CodingKey { case usesLocalQueries, id }
 }
 
 struct BackupGeneratedImage: Codable {
@@ -227,7 +244,8 @@ enum ProductDataService {
                 updatedAt: $0.updatedAt
             )
         }
-        let conversations = try modelContext.fetch(FetchDescriptor<AIConversation>()).map {
+        let conversations = try modelContext.fetch(FetchDescriptor<AIConversation>())
+            .filter { $0.usesLocalQueries == true }.map {
             BackupConversation(
                 id: $0.id,
                 title: $0.title,
@@ -236,13 +254,9 @@ enum ProductDataService {
                 titleGeneratedAt: $0.titleGeneratedAt,
                 accountScopeKey: $0.accountScopeKey,
                 messages: $0.messages,
-                games: $0.games,
                 rawMessagesData: (try? $0.readMessages()) == nil ? $0.messagesData : nil,
-                rawGameContextData: (try? $0.readGames()) == nil ? $0.gameContextData : nil,
                 draft: $0.draft,
-                draftRequestsImage: $0.draftRequestsImage,
-                recentPlayContext: try? $0.readRecentPlayContext(),
-                rawRecentPlayContextData: (try? $0.readRecentPlayContext()) == nil ? $0.recentPlayContextData : nil
+                draftRequestsImage: $0.draftRequestsImage
             )
         }
         let profiles = try modelContext.fetch(FetchDescriptor<AIProfileResult>()).map {
@@ -271,6 +285,7 @@ enum ProductDataService {
                 sourceConversationID: $0.sourceConversationID
             )
         }
+        let conversationIDs = Set(conversations.map(\.id))
         return YouJiBackup(
             formatVersion: 4,
             createdAt: .now,
@@ -281,8 +296,9 @@ enum ProductDataService {
             profiles: profiles,
             plans: plans,
             playTimeAllocations: try modelContext.fetch(FetchDescriptor<PlayTimeAllocation>()).map { try $0.readValue() },
-            generatedImages: try modelContext.fetch(FetchDescriptor<AIGeneratedImage>()).map {
+            generatedImages: try modelContext.fetch(FetchDescriptor<AIGeneratedImage>()).compactMap {
                 guard let origin = AIGeneratedImage.Origin(rawValue: $0.originRaw) else { throw AIAnalysisError.invalidImage }
+                guard origin != .conversation || conversationIDs.contains($0.ownerID) else { return nil }
                 return BackupGeneratedImage(id: $0.id, accountScopeKey: $0.accountScopeKey, ownerID: $0.ownerID,
                     origin: origin, createdAt: $0.createdAt, prompt: $0.prompt, modelName: $0.modelName, pngData: $0.pngData)
             }
@@ -416,13 +432,11 @@ enum ProductDataService {
             for item in backup.conversations {
                 let local = existingConversations[item.id]
                 let imported = AIConversation(id: item.id, title: item.title, createdAt: item.createdAt,
-                                              accountScopeKey: item.accountScopeKey, games: item.games)
+                                              accountScopeKey: item.accountScopeKey)
                 imported.messages = item.messages
                 imported.draft = item.draft ?? ""
                 imported.draftRequestsImage = item.draftRequestsImage ?? false
-                imported.recentPlayContextData = try item.rawRecentPlayContextData ?? item.recentPlayContext?.encoded()
                 if let raw = item.rawMessagesData { imported.messagesData = raw }
-                if let raw = item.rawGameContextData { imported.gameContextData = raw }
                 imported.updatedAt = item.updatedAt
                 imported.titleGeneratedAt = item.titleGeneratedAt
                 guard let local else {
@@ -431,15 +445,10 @@ enum ProductDataService {
                 }
                 let oldDate = local.updatedAt
                 let isNewer = item.updatedAt >= oldDate
-                // A readable component always wins over an unreadable one. An older
-                // backup can repair damage without truncating a newer readable thread.
+                // A readable backup can repair damage without truncating a newer readable thread.
                 if (try? imported.readMessages()) != nil,
                    isNewer || (try? local.readMessages()) == nil {
                     local.messagesData = imported.messagesData
-                }
-                if (try? imported.readGames()) != nil,
-                   isNewer || (try? local.readGames()) == nil {
-                    local.gameContextData = imported.gameContextData
                 }
                 if isNewer && !imported.hasUnreadableContent {
                     local.title = item.title
@@ -452,9 +461,6 @@ enum ProductDataService {
                 if isNewer, local.accountScopeKey == item.accountScopeKey, let draft = item.draft {
                     local.draft = draft
                     if let requestsImage = item.draftRequestsImage { local.draftRequestsImage = requestsImage }
-                }
-                if isNewer, local.accountScopeKey == item.accountScopeKey, let recentData = imported.recentPlayContextData {
-                    local.recentPlayContextData = recentData
                 }
                 local.updatedAt = max(oldDate, item.updatedAt)
             }
@@ -906,11 +912,14 @@ extension YouJiBackup {
         games = try values.decode([BackupGame].self, forKey: .games)
         snapshots = try values.decodeIfPresent([BackupSnapshot].self, forKey: .snapshots) ?? []
         dailyActivities = try values.decodeIfPresent([BackupDailyActivity].self, forKey: .dailyActivities) ?? []
-        conversations = try values.decodeIfPresent([BackupConversation].self, forKey: .conversations) ?? []
+        let entries = try values.decodeIfPresent([BackupConversationEntry].self, forKey: .conversations) ?? []
+        conversations = entries.compactMap(\.conversation)
+        let discardedIDs = Set(entries.compactMap(\.discardedID)).subtracting(conversations.map(\.id))
         profiles = try values.decodeIfPresent([BackupProfile].self, forKey: .profiles) ?? []
         plans = try values.decodeIfPresent([BackupPlan].self, forKey: .plans) ?? []
         playTimeAllocations = try values.decodeIfPresent([PlayTimeAllocationValue].self, forKey: .playTimeAllocations) ?? []
-        generatedImages = try values.decodeIfPresent([BackupGeneratedImage].self, forKey: .generatedImages) ?? []
+        generatedImages = (try values.decodeIfPresent([BackupGeneratedImage].self, forKey: .generatedImages) ?? [])
+            .filter { $0.origin != .conversation || !discardedIDs.contains($0.ownerID) }
     }
 }
 
@@ -1055,12 +1064,6 @@ extension ProductDataService {
 
         for item in backup.conversations {
             try unique(item.messages.map(\.id))
-            try require(item.games.allSatisfy { DataValidation.minutes($0.totalMinutes) }, "对话中的时长超出范围")
-            do {
-                try item.recentPlayContext?.validate()
-                // Preserve opaque damaged context for recovery. readRecentPlayContext
-                // validates it again before a retry can send it to OpenAI.
-            } catch { throw ProductDataError.invalidBackup("对话中的近期游玩记录不完整") }
         }
         for item in backup.profiles {
             try require(item.minimumHours >= 0 && item.minimumHours <= DataValidation.maximumMinutes / 60 && item.gameCount >= 0 && DataValidation.minutes(item.totalMinutes), "人格记录数值超出范围")

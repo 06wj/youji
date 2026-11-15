@@ -30,7 +30,7 @@ final class SavedPlanTests: XCTestCase {
     func testPlanBackupPreservesLinksAndReadsOlderBackups() throws {
         let source = try container()
         let game = game()
-        let conversation = AIConversation(accountScopeKey: "ps:a", games: [])
+        let conversation = AIConversation(accountScopeKey: "ps:a")
         let plan = SavedGamePlan(accountScopeKey: "ps:a", title: "重温", note: String(repeating: "完整建议\n", count: 100),
                                  gameID: game.applicationID, sourceConversationID: conversation.id.uuidString)
         source.mainContext.insert(game)
@@ -195,7 +195,7 @@ extension SavedPlanTests {
         let game = game(platform: .switchConsole)
         game.weeklyEndingDayKey = "2026-10-19"
         game.weeklyMinutes = [1, 2, 3, 4, 5, 6, 7]
-        let conversation = AIConversation(accountScopeKey: "switch:a", games: [])
+        let conversation = AIConversation(accountScopeKey: "switch:a")
         conversation.draft = "尚未发送的追问，请完整保留"
         source.mainContext.insert(game)
         source.mainContext.insert(conversation)
@@ -226,13 +226,13 @@ extension SavedPlanTests {
     @MainActor
     func testDraftMergeHonorsEditDatesAndLegacyMissingField() throws {
         let source = try container()
-        let conversation = AIConversation(accountScopeKey: "ps:a", games: [])
+        let conversation = AIConversation(accountScopeKey: "ps:a")
         conversation.draft = "旧草稿"
         conversation.updatedAt = Date(timeIntervalSince1970: 100)
         source.mainContext.insert(conversation)
         try source.mainContext.save()
         let target = try container()
-        let local = AIConversation(id: conversation.id, accountScopeKey: "ps:a", games: [])
+        let local = AIConversation(id: conversation.id, accountScopeKey: "ps:a")
         local.draft = "本地较新草稿"
         local.updatedAt = Date(timeIntervalSince1970: 200)
         target.mainContext.insert(local)

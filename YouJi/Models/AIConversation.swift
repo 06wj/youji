@@ -9,18 +9,19 @@ final class AIConversation {
     var updatedAt: Date
     var titleGeneratedAt: Date?
     var messagesData: Data
+    // Retain the old columns so SwiftData can open existing stores for cleanup.
     var gameContextData: Data
+    var recentPlayContextData: Data?
+    var usesLocalQueries: Bool?
     var accountScopeKey: String = ""
     var draft: String = ""
     var draftRequestsImage: Bool = false
-    var recentPlayContextData: Data?
 
     init(
         id: UUID = UUID(),
         title: String = "新对话",
         createdAt: Date = .now,
         accountScopeKey: String = "",
-        games: [AIAnalysisGame],
         draft: String = ""
     ) {
         self.id = id
@@ -30,28 +31,16 @@ final class AIConversation {
         self.accountScopeKey = accountScopeKey
         self.draft = draft
         self.messagesData = Self.encode([AIChatMessage]())
-        self.gameContextData = Self.encode(games)
+        self.gameContextData = Data("[]".utf8)
+        self.usesLocalQueries = true
     }
 
     func readMessages() throws -> [AIChatMessage] {
         try JSONDecoder().decode([AIChatMessage].self, from: messagesData)
     }
 
-    func readGames() throws -> [AIAnalysisGame] {
-        try JSONDecoder().decode([AIAnalysisGame].self, from: gameContextData)
-    }
-
-    func readRecentPlayContext() throws -> AIRecentPlayContext? {
-        guard let recentPlayContextData else { return nil }
-        guard let value = try? JSONDecoder().decode(AIRecentPlayContext.self, from: recentPlayContextData) else {
-            throw AIRecentPlayError.invalidContext
-        }
-        try value.validate()
-        return value
-    }
-
     var hasUnreadableContent: Bool {
-        (try? readMessages()) == nil || (try? readGames()) == nil
+        (try? readMessages()) == nil
     }
 
     var canDiscardEmptyConversation: Bool {
@@ -76,11 +65,6 @@ final class AIConversation {
             messagesData = Self.encode(newValue)
             updatedAt = .now
         }
-    }
-
-    var games: [AIAnalysisGame] {
-        get { Self.decode([AIAnalysisGame].self, from: gameContextData) ?? [] }
-        set { gameContextData = Self.encode(newValue) }
     }
 
     var preview: String {

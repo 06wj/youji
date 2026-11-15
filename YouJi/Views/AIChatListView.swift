@@ -5,14 +5,11 @@ struct AIChatListView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \AIConversation.updatedAt, order: .reverse) private var conversations: [AIConversation]
-    @Query private var allGames: [GameRecord]
 
-    let games: [GameRecord]
     let accountScopeKey: String
     let initialDraft: String?
 
-    init(games: [GameRecord], accountScopeKey: String, initialDraft: String? = nil) {
-        self.games = games
+    init(accountScopeKey: String, initialDraft: String? = nil) {
         self.accountScopeKey = accountScopeKey
         self.initialDraft = initialDraft
     }
@@ -23,10 +20,8 @@ struct AIChatListView: View {
     @State private var persistenceError: String?
 
     private var scopedConversations: [AIConversation] {
-        conversations.filter { $0.accountScopeKey == accountScopeKey }
+        conversations.filter { $0.usesLocalQueries == true && $0.accountScopeKey == accountScopeKey }
     }
-
-    private var chatGames: [AIAnalysisGame] { AIGameContext.snapshot(games) }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -48,7 +43,6 @@ struct AIChatListView: View {
                     Button { createConversation() } label: {
                         Image(systemName: "square.and.pencil")
                     }
-                    .disabled(chatGames.isEmpty)
                     .accessibilityLabel("新建对话")
                 }
             }
@@ -60,18 +54,9 @@ struct AIChatListView: View {
                 }
             }
             .task {
-                if !didOpenInitialDraft, let initialDraft, !chatGames.isEmpty {
+                if !didOpenInitialDraft, let initialDraft {
                     didOpenInitialDraft = true
                     createConversation(draft: initialDraft)
-                }
-                if conversations.contains(where: { $0.accountScopeKey.isEmpty }) {
-                    do {
-                        try AIConversationActions.migrateLegacyConversations(
-                            to: accountScopeKey, games: allGames, in: modelContext
-                        )
-                    } catch {
-                        persistenceError = error.localizedDescription
-                    }
                 }
             }
             .alert("本地保存失败", isPresented: Binding(
@@ -153,21 +138,19 @@ struct AIChatListView: View {
                                  subtitle: "聊偏好，聊回忆，也聊下一个想去的世界。", artwork: "MemoryCrystal")
                 VStack(alignment: .leading, spacing: 12) {
                     Text("从一句好奇开始").font(.title3.bold())
-                    Text(chatGames.isEmpty ? "至少需要一款游玩超过 1 小时的游戏才能开始聊天。" : "游戏大脑会带上你的游玩记录，记住每一段对话。")
+                    Text("游戏大脑可按问题查找本机的游玩记录。")
                         .font(.subheadline).foregroundStyle(YJColor.muted).lineSpacing(5)
                     Button("开始聊天") { createConversation() }
-                        .buttonStyle(YJPrimaryButtonStyle()).disabled(chatGames.isEmpty)
+                        .buttonStyle(YJPrimaryButtonStyle())
                 }.padding(20).youjiCard()
             }.padding(18)
         }
     }
 
     private func createConversation(draft: String = "") {
-        guard !chatGames.isEmpty else { return }
         do {
             let conversation = try AIConversationActions.create(
-                accountScope: accountScopeKey, games: chatGames, draft: draft,
-                recentPlay: AIRecentPlayContextBuilder.capture(accountScope: accountScopeKey, in: modelContext), in: modelContext
+                accountScope: accountScopeKey, draft: draft, in: modelContext
             )
             path.append(conversation.id)
         } catch {
@@ -188,12 +171,6 @@ struct AIChatListView: View {
         self.conversationToDelete = nil
     }
 
-    private func trophyText(_ game: GameRecord) -> String {
-        let percent = Int((Double(game.trophiesEarned) / Double(game.trophiesDefined) * 100).rounded())
-        let platinum = game.platinumTrophiesEarned > 0 ? " · 已白金" : ""
-        return "\(game.trophiesEarned)/\(game.trophiesDefined)（\(percent)%）\(platinum)"
-    }
-
     private var chatListBackground: some View {
         ZStack {
             YJColor.paper
@@ -212,16 +189,14 @@ struct AIChatListView: View {
 enum AIConversationActions {
     static func persistMessages(_ id: UUID, messages: [AIChatMessage], expecting: [AIChatMessage],
                                 draft: String, requestsImage: Bool, provisionalTitle: String? = nil,
-                                recentPlay: AIRecentPlayContext? = nil,
                                 revision: UUID, in context: ModelContext) throws {
         try LocalDataRevision.check(revision)
-        let recentData = try recentPlay?.encoded()
         try LocalPersistence.transaction(context) { writer in
             let stored = try LocalPersistence.conversation(id, in: writer)
-            guard try stored.readMessages() == expecting else { throw AIConversationWriteError.changed }
+            guard stored.usesLocalQueries == true,
+                  try stored.readMessages() == expecting else { throw AIConversationWriteError.changed }
             if stored.messages != messages { stored.messages = messages }
             stored.updateDraft(draft, requestsImage: requestsImage)
-            if let recentData { stored.recentPlayContextData = recentData }
             if let provisionalTitle, stored.titleGeneratedAt == nil, stored.title == "新对话" {
                 stored.title = provisionalTitle
                 stored.updatedAt = .now
@@ -230,41 +205,31 @@ enum AIConversationActions {
     }
 
     /// Never expose the disposable writer's model to a SwiftUI destination.
-    static func create(accountScope: String, games: [AIAnalysisGame], draft: String, requestsImage: Bool = false,
-                       recentPlay: AIRecentPlayContext? = nil,
+    static func create(accountScope: String, draft: String, requestsImage: Bool = false,
                        in context: ModelContext) throws -> AIConversation {
         let id = UUID()
-        let recentData = try recentPlay?.encoded()
         try LocalPersistence.transaction(context) { writer in
-            let conversation = AIConversation(id: id, accountScopeKey: accountScope, games: games, draft: draft)
+            let conversation = AIConversation(id: id, accountScopeKey: accountScope, draft: draft)
             conversation.draftRequestsImage = requestsImage
-            conversation.recentPlayContextData = recentData
             writer.insert(conversation)
         }
         return try LocalPersistence.conversation(id, in: context)
     }
 
-    static func migrateLegacyConversations(to scope: String, games: [GameRecord],
-                                           in context: ModelContext) throws {
-        guard !scope.isEmpty, AccountScope.unambiguousArchiveScopeKey(for: games) == scope else { return }
+    static func removeSnapshotConversations(in context: ModelContext) throws {
+        let obsolete = FetchDescriptor<AIConversation>(predicate: #Predicate {
+            $0.usesLocalQueries == nil || $0.usesLocalQueries == false
+        })
+        guard try context.fetchCount(obsolete) > 0 else { return }
         try LocalPersistence.transaction(context) { writer in
-            let legacy = try writer.fetch(FetchDescriptor<AIConversation>()).filter { $0.accountScopeKey.isEmpty }
-            let migratedIDs = Set(legacy.map(\.id))
-            guard !migratedIDs.isEmpty else { return }
-            let migratedAt = Date.now
-            for conversation in legacy {
-                conversation.accountScopeKey = scope
-                conversation.updatedAt = migratedAt
+            let legacy = try writer.fetch(obsolete)
+            let legacyIDs = Set(legacy.map(\.id))
+            let kind = AIGeneratedImage.Origin.conversation.rawValue
+            let images = try writer.fetch(FetchDescriptor<AIGeneratedImage>(predicate: #Predicate { $0.originRaw == kind }))
+            for image in images where legacyIDs.contains(image.ownerID) {
+                writer.delete(image)
             }
-            for image in try writer.fetch(FetchDescriptor<AIGeneratedImage>())
-                where image.accountScopeKey.isEmpty && image.originRaw == "conversation" && migratedIDs.contains(image.ownerID) {
-                image.accountScopeKey = scope
-            }
-            for plan in try writer.fetch(FetchDescriptor<SavedGamePlan>()) where plan.accountScopeKey.isEmpty {
-                guard let sourceID = UUID(uuidString: plan.sourceConversationID), migratedIDs.contains(sourceID) else { continue }
-                plan.accountScopeKey = scope
-                plan.updatedAt = migratedAt
-            }
+            for conversation in legacy { writer.delete(conversation) }
         }
     }
 }

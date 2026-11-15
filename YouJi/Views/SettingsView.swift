@@ -120,7 +120,7 @@ struct SettingsView: View {
                         TextField(AISettingsStore.defaultModelName, text: $modelName)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                             .padding(13).background(YJColor.paper, in: RoundedRectangle(cornerRadius: 12))
-                        Text("用于聊天、分析及对话标题；需支持 Responses API 的绘图工具。")
+                        Text("用于聊天、分析和对话标题。聊天需支持 Responses API 的函数调用和绘图工具。")
                             .font(.caption2).foregroundStyle(YJColor.muted)
                     }
                     VStack(alignment: .leading, spacing: 7) {

@@ -92,7 +92,9 @@ final class LocalDatabaseState: ObservableObject {
             return
         }
         do {
-            container = try ModelContainer(for: Self.schema, configurations: ModelConfiguration(url: storeURL))
+            let opened = try ModelContainer(for: Self.schema, configurations: ModelConfiguration(url: storeURL))
+            try AIConversationActions.removeSnapshotConversations(in: opened.mainContext)
+            container = opened
             failure = nil
             expectsExistingStore = true
         } catch {

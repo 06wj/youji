@@ -106,8 +106,7 @@ enum LocalPersistence {
             copy(source, target, [\.title, \.accountScopeKey, \.draft])
             copy(source, target, [\.createdAt, \.updatedAt])
             copy(source, target, [\.titleGeneratedAt])
-            copy(source, target, [\.messagesData, \.gameContextData])
-            copy(source, target, [\.recentPlayContextData])
+            copy(source, target, [\.messagesData])
             copy(source, target, [\.draftRequestsImage])
         case let source as AIGeneratedImage:
             let id = source.id

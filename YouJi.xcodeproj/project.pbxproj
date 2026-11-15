@@ -50,8 +50,8 @@
 		A10000000000000000000025 /* Views/AIImageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000025 /* Views/AIImageViews.swift */; };
 		A20000000000000000000003 /* OpenAIIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* OpenAIIntegrationTests.swift */; };
 		A10000000000000000000026 /* Services/AIChatDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000026 /* Services/AIChatDraft.swift */; };
-		A10000000000000000000027 /* Services/AIRecentPlayContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000027 /* Services/AIRecentPlayContext.swift */; };
-		A20000000000000000000004 /* AIRecentPlayContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* AIRecentPlayContextTests.swift */; };
+		A10000000000000000000027 /* Services/AIChatGameQueries.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000027 /* Services/AIChatGameQueries.swift */; };
+		A20000000000000000000004 /* AIChatGameQueriesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* AIChatGameQueriesTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -111,8 +111,8 @@
 		B10000000000000000000025 /* Views/AIImageViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/AIImageViews.swift; sourceTree = "<group>"; };
 		B20000000000000000000004 /* OpenAIIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIIntegrationTests.swift; sourceTree = "<group>"; };
 		B10000000000000000000026 /* Services/AIChatDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/AIChatDraft.swift; sourceTree = "<group>"; };
-		B10000000000000000000027 /* Services/AIRecentPlayContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/AIRecentPlayContext.swift; sourceTree = "<group>"; };
-		B20000000000000000000005 /* AIRecentPlayContextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIRecentPlayContextTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000027 /* Services/AIChatGameQueries.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/AIChatGameQueries.swift; sourceTree = "<group>"; };
+		B20000000000000000000005 /* AIChatGameQueriesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIChatGameQueriesTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -153,7 +153,7 @@
 				B10000000000000000000024 /* Services/AIImageService.swift */,
 				B10000000000000000000025 /* Views/AIImageViews.swift */,
 				B10000000000000000000026 /* Services/AIChatDraft.swift */,
-				B10000000000000000000027 /* Services/AIRecentPlayContext.swift */,
+				B10000000000000000000027 /* Services/AIChatGameQueries.swift */,
 				B10000000000000000000001 /* YouJiApp.swift */,
 				B10000000000000000000002 /* Models/GameRecord.swift */,
 				B10000000000000000000003 /* Design/Theme.swift */,
@@ -205,7 +205,7 @@
 				79649A974DECFDE9CB8C971D /* LibraryExperienceTests.swift */,
 				B20000000000000000000003 /* PlayTimeAllocationTests.swift */,
 				B20000000000000000000004 /* OpenAIIntegrationTests.swift */,
-				B20000000000000000000005 /* AIRecentPlayContextTests.swift */,
+				B20000000000000000000005 /* AIChatGameQueriesTests.swift */,
 				B20000000000000000000001 /* YouJiDataTests.swift */,
 			);
 			path = YouJiTests;
@@ -320,7 +320,7 @@
 				A10000000000000000000024 /* Services/AIImageService.swift in Sources */,
 				A10000000000000000000025 /* Views/AIImageViews.swift in Sources */,
 				A10000000000000000000026 /* Services/AIChatDraft.swift in Sources */,
-				A10000000000000000000027 /* Services/AIRecentPlayContext.swift in Sources */,
+				A10000000000000000000027 /* Services/AIChatGameQueries.swift in Sources */,
 				A10000000000000000000001 /* YouJiApp.swift in Sources */,
 				A10000000000000000000002 /* Models/GameRecord.swift in Sources */,
 				A10000000000000000000003 /* Design/Theme.swift in Sources */,
@@ -360,7 +360,7 @@
 				94EE4E75734110B3D9EEF588 /* LibraryExperienceTests.swift in Sources */,
 				A20000000000000000000002 /* PlayTimeAllocationTests.swift in Sources */,
 				A20000000000000000000003 /* OpenAIIntegrationTests.swift in Sources */,
-				A20000000000000000000004 /* AIRecentPlayContextTests.swift in Sources */,
+				A20000000000000000000004 /* AIChatGameQueriesTests.swift in Sources */,
 				A20000000000000000000001 /* YouJiDataTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

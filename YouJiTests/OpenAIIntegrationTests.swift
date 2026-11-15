@@ -29,15 +29,21 @@ final class OpenAIIntegrationTests: XCTestCase {
         try ModelContainer(for: LocalDatabaseState.schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
     }
 
-    func testResponsesRequestIncludesFrozenGamesAndConversationWithoutLocalMetadata() async throws {
+    func testInitialChatRequestHasToolSchemasAndConversationOnly() async throws {
+        let store = try store()
+        store.mainContext.insert(GameRecord(applicationID: "ps:private-account:private-id",
+            accountID: "private-account", titleID: "private-id", platform: .playStation, title: game.title, totalMinutes: 180))
+        try store.mainContext.save()
         let log = OpenAIRequestLog()
         let response = Data(completed.utf8)
         let session = session { request in log.record(request); return (200, response) }
-        let user = AIChatMessage(role: .user, content: "今晚玩什么？")
-        let answer = try await AIAnalysisClient(session: session).chat(games: [game], messages: [user],
-            apiKey: "test-placeholder", model: AISettingsStore.defaultModelName)
+        let user = AIChatMessage(role: .user, content: "PS 如何截图？")
+        let answer = try await AIAnalysisClient(session: session).chat(messages: [user],
+            apiKey: "test-placeholder", model: AISettingsStore.defaultModelName,
+            queries: AIChatGameQueries(accountScope: "ps:private-account", in: store.mainContext))
         XCTAssertEqual(answer.text, "第一段\n第二段")
         XCTAssertNil(answer.imageData)
+        XCTAssertFalse(answer.usedLocalRecords)
         let request = try XCTUnwrap(log.requests.first)
         XCTAssertEqual(request.url, AISettingsStore.responsesURL)
         XCTAssertEqual(request.httpMethod, "POST")
@@ -48,10 +54,25 @@ final class OpenAIIntegrationTests: XCTestCase {
         XCTAssertNil(body["temperature"])
         XCTAssertNil(body["max_tokens"])
         XCTAssertNotNil(body["max_output_tokens"])
-        XCTAssertTrue((body["instructions"] as? String)?.contains(game.title) == true)
+        XCTAssertEqual(body["include"] as? [String], ["reasoning.encrypted_content"])
+        XCTAssertEqual(body["parallel_tool_calls"] as? Bool, false)
+        XCTAssertNil(body["previous_response_id"])
+        let tools = try XCTUnwrap(body["tools"] as? [[String: Any]])
+        let functions = tools.filter { $0["type"] as? String == "function" }
+        XCTAssertEqual(functions.compactMap { $0["name"] as? String }, ["query_games", "query_play_activity"])
+        for tool in functions {
+            let schema = try XCTUnwrap(tool["parameters"] as? [String: Any])
+            let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+            XCTAssertEqual(tool["strict"] as? Bool, true)
+            XCTAssertEqual(schema["additionalProperties"] as? Bool, false)
+            XCTAssertEqual(Set(schema["required"] as? [String] ?? []), Set(properties.keys))
+        }
         let messages = try XCTUnwrap(body["input"] as? [[String: String]])
         XCTAssertEqual(messages, [["role": "user", "content": user.content]])
-        XCTAssertFalse(String(decoding: OpenAIStub.body(request), as: UTF8.self).contains(user.id.uuidString))
+        let encoded = String(decoding: OpenAIStub.body(request), as: UTF8.self)
+        for secret in [user.id.uuidString, game.title, "private-account", "private-id"] {
+            XCTAssertFalse(encoded.contains(secret))
+        }
         XCTAssertEqual(log.requests.count, 1)
     }
 
@@ -104,6 +125,7 @@ final class OpenAIIntegrationTests: XCTestCase {
     }
 
     func testUnifiedChatLetsModelChooseImageWithoutAManualMode() async throws {
+        let store = try store()
         let image = png()
         let response = try JSONSerialization.data(withJSONObject: ["status": "completed", "output": [
             ["type": "image_generation_call", "status": "completed", "result": image.base64EncodedString(), "revised_prompt": "宇宙冒险画像"],
@@ -111,9 +133,10 @@ final class OpenAIIntegrationTests: XCTestCase {
         ]])
         let log = OpenAIRequestLog()
         let session = session { request in log.record(request); return (200, response) }
-        let result = try await AIAnalysisClient(session: session).chat(games: [game],
+        let result = try await AIAnalysisClient(session: session).chat(
             messages: [AIChatMessage(role: .user, content: "帮我画一张游戏画像")],
-            apiKey: "test-placeholder", model: "text-model", imageModel: "image-model")
+            apiKey: "test-placeholder", model: "text-model", imageModel: "image-model",
+            queries: AIChatGameQueries(accountScope: "ps:a", in: store.mainContext))
         XCTAssertEqual(result.text, "给你的冒险世界。")
         XCTAssertEqual(result.imageData, image)
         let request = try XCTUnwrap(log.requests.first)
@@ -121,7 +144,7 @@ final class OpenAIIntegrationTests: XCTestCase {
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: OpenAIStub.body(request)) as? [String: Any])
         XCTAssertEqual(body["tool_choice"] as? String, "auto")
         XCTAssertEqual(body["max_tool_calls"] as? Int, 1)
-        let tool = try XCTUnwrap((body["tools"] as? [[String: Any]])?.first)
+        let tool = try XCTUnwrap((body["tools"] as? [[String: Any]])?.first { $0["type"] as? String == "image_generation" })
         XCTAssertEqual(tool["type"] as? String, "image_generation")
         XCTAssertEqual(tool["model"] as? String, "image-model")
         XCTAssertEqual(tool["output_format"] as? String, "png")
@@ -130,7 +153,7 @@ final class OpenAIIntegrationTests: XCTestCase {
 
     func testImageOnlyUnifiedReplyCanBeSavedForAnOrdinaryUserMessage() throws {
         let store = try store()
-        let conversation = try AIConversationActions.create(accountScope: "ps:a", games: [game], draft: "", in: store.mainContext)
+        let conversation = try AIConversationActions.create(accountScope: "ps:a", draft: "", in: store.mainContext)
         conversation.messages = [AIChatMessage(role: .user, content: "画一个世界")]
         try store.mainContext.save()
         let reply = try AIImageService.saveChatReply(AIChatReply(text: "", imageData: png(), imagePrompt: "一个冒险世界"),
@@ -141,8 +164,11 @@ final class OpenAIIntegrationTests: XCTestCase {
         XCTAssertEqual(try LocalPersistence.conversation(conversation.id, in: ModelContext(store)).preview, "已生成图片")
     }
 
-    func testRecentPlayDatesAndMinutesReachTheRequestWithoutLocalIdentifiers() async throws {
+    func testModelQueriesActivityAndReceivesOnlyProjectedResultsOnContinuation() async throws {
+        let store = try store()
         let now = Date.now
+        let start = DailyPlayActivity.dayKey(for: Calendar.current.date(byAdding: .day, value: -29, to: now)!)
+        let end = DailyPlayActivity.dayKey(for: now)
         let record = GameRecord(applicationID: "ps:private-account:secret-title-id", accountID: "private-account", titleID: "secret-title-id",
             platform: .playStation, title: game.title, totalMinutes: 180, imageURL: "https://example.invalid/private-cover")
         record.personalNote = "do not transmit private note"
@@ -150,22 +176,74 @@ final class OpenAIIntegrationTests: XCTestCase {
             PlaySnapshot(gameID: record.applicationID, accountID: record.accountID, platform: .playStation, date: now.addingTimeInterval(-86_400), totalMinutes: 120, trophiesEarned: 1),
             PlaySnapshot(gameID: record.applicationID, accountID: record.accountID, platform: .playStation, date: now, totalMinutes: 180, trophiesEarned: 1)
         ]
-        let recent = try AIRecentPlayContextBuilder.make(games: [record], snapshots: snapshots, activities: [], allocations: [], now: now)
+        store.mainContext.insert(record)
+        for snapshot in snapshots { store.mainContext.insert(snapshot) }
+        try store.mainContext.save()
+        let arguments = """
+            {"platform":"ps","title_contains":null,"start_day":"\(start)","end_day":"\(end)",
+            "group_by":"game","sort_by":"minutes","include_trophies":false,"limit":5,"offset":0}
+            """
+        let reasoning: [String: Any] = ["type": "reasoning", "id": "rs_123", "encrypted_content": "opaque", "summary": []]
+        let toolCall: [String: Any] = ["type": "function_call", "id": "fc_123", "call_id": "call_1",
+            "name": "query_play_activity", "arguments": arguments, "status": "completed"]
+        let call = try JSONSerialization.data(withJSONObject: ["status": "completed", "output": [reasoning, toolCall]])
         let log = OpenAIRequestLog()
         let data = Data(completed.utf8)
-        let session = session { request in log.record(request); return (200, data) }
-        _ = try await AIAnalysisClient(session: session).chat(games: [game], messages: [AIChatMessage(role: .user, content: "总结最近一个月")],
-            apiKey: "test-placeholder", model: "text-model", recentPlay: recent)
-        let request = try XCTUnwrap(log.requests.first)
-        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: OpenAIStub.body(request)) as? [String: Any])
-        let instructions = try XCTUnwrap(body["instructions"] as? String)
-        XCTAssertTrue(instructions.contains(recent.startDayKey))
-        XCTAssertTrue(instructions.contains("syncInterval"))
-        XCTAssertTrue(instructions.contains("60"))
-        for privateValue in [record.applicationID, record.accountID, record.titleID, record.imageURL, record.personalNote] {
-            XCTAssertFalse(instructions.contains(privateValue))
+        let session = session { request in
+            log.record(request)
+            return (200, log.requests.count == 1 ? call : data)
         }
-        XCTAssertEqual(body["tool_choice"] as? String, "auto", "A summary request must not force image generation")
+        let reply = try await AIAnalysisClient(session: session).chat(messages: [AIChatMessage(role: .user, content: "总结最近一个月")],
+            apiKey: "test-placeholder", model: "text-model",
+            queries: AIChatGameQueries(accountScope: "ps:private-account", in: store.mainContext, now: now))
+        XCTAssertTrue(reply.usedLocalRecords)
+        XCTAssertEqual(log.requests.count, 2)
+        let firstRequest = try XCTUnwrap(log.requests.first)
+        XCTAssertFalse(String(decoding: OpenAIStub.body(firstRequest), as: UTF8.self).contains(record.title))
+        let continuation = try XCTUnwrap(log.requests.last)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: OpenAIStub.body(continuation)) as? [String: Any])
+        let input = try XCTUnwrap(body["input"] as? [[String: Any]])
+        XCTAssertEqual(input.map { $0["type"] as? String }, [nil, "reasoning", "function_call", "function_call_output"])
+        XCTAssertEqual(input[1]["encrypted_content"] as? String, "opaque")
+        XCTAssertEqual(input[2]["arguments"] as? String, arguments)
+        XCTAssertEqual(input[3]["call_id"] as? String, "call_1")
+        let result = try XCTUnwrap(input[3]["output"] as? String)
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
+        XCTAssertEqual(payload["startDay"] as? String, start)
+        XCTAssertEqual(payload["totals"] as? [String: Int], ["minutes": 60])
+        XCTAssertTrue(result.contains(record.title))
+        for privateValue in [record.applicationID, record.accountID, record.titleID, record.imageURL, record.personalNote] + snapshots.map(\.snapshotID) {
+            XCTAssertFalse(result.contains(privateValue))
+        }
+        XCTAssertEqual(body["tool_choice"] as? String, "auto")
+    }
+
+    func testChatQueriesAreBoundedAcrossAReply() async throws {
+        let store = try store()
+        let budget = AIChatGameQueries.maximumCalls
+        let arguments = """
+            {"platform":"all","title_contains":null,"min_minutes_exclusive":null,"max_minutes_inclusive":null,
+            "platinum_only":false,"sort_by":"total_minutes","ascending":false,"fields":[],"limit":0,"offset":0}
+            """
+        let log = OpenAIRequestLog()
+        let answer = Data(completed.utf8)
+        let session = session { request in
+            log.record(request)
+            let count = log.requests.count
+            if count > budget { return (200, answer) }
+            let response = try JSONSerialization.data(withJSONObject: ["status": "completed", "output": [
+                ["type": "function_call", "call_id": "call_\(count)", "name": "query_games", "arguments": arguments]
+            ]])
+            return (200, response)
+        }
+        let reply = try await AIAnalysisClient(session: session).chat(messages: [AIChatMessage(role: .user, content: "游戏数")],
+            apiKey: "test-placeholder", model: "text-model", queries: AIChatGameQueries(accountScope: "ps:a", in: store.mainContext))
+        XCTAssertTrue(reply.usedLocalRecords)
+        XCTAssertEqual(log.requests.count, budget + 1)
+        let request = try XCTUnwrap(log.requests.last)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: OpenAIStub.body(request)) as? [String: Any])
+        XCTAssertEqual((body["tools"] as? [[String: Any]])?.compactMap { $0["type"] as? String }, ["image_generation"])
+        XCTAssertEqual((body["input"] as? [[String: Any]])?.filter { $0["type"] as? String == "function_call_output" }.count, budget)
     }
 
     func testImageURLsAndInvalidBase64AreRejectedWithoutFollowingThem() async throws {
@@ -185,7 +263,7 @@ final class OpenAIIntegrationTests: XCTestCase {
 
     func testChatImageAndAssistantMessageSaveTogetherAndDuplicateReplyIsRejected() throws {
         let store = try store()
-        let conversation = try AIConversationActions.create(accountScope: "ps:a", games: [game], draft: "下一张图",
+        let conversation = try AIConversationActions.create(accountScope: "ps:a", draft: "下一张图",
                                                              requestsImage: true, in: store.mainContext)
         conversation.messages = [AIChatMessage(role: .user, content: "画一个宇宙机器人", requestsImage: true)]
         try store.mainContext.save()
@@ -222,7 +300,7 @@ final class OpenAIIntegrationTests: XCTestCase {
 
     func testImagesAndImageDraftsRoundTripInVersionFourBackup() throws {
         let source = try store()
-        let conversation = try AIConversationActions.create(accountScope: "ps:a", games: [game], draft: "下一张画像", requestsImage: true, in: source.mainContext)
+        let conversation = try AIConversationActions.create(accountScope: "ps:a", draft: "下一张画像", requestsImage: true, in: source.mainContext)
         conversation.messages = [AIChatMessage(role: .user, content: "画出我的冒险世界", requestsImage: true)]
         try source.mainContext.save()
         let image = png()
@@ -241,6 +319,32 @@ final class OpenAIIntegrationTests: XCTestCase {
         XCTAssertEqual(restored.messages.last?.imageID, images.first?.id)
         XCTAssertTrue(restored.draftRequestsImage)
         XCTAssertEqual(restored.draft, "下一张画像")
+    }
+
+    func testRestoreSkipsOldSnapshotChatsAndTheirImagesButKeepsOtherData() throws {
+        let source = try store()
+        let old = try AIConversationActions.create(accountScope: "ps:a", draft: "旧草稿", in: source.mainContext)
+        let current = try AIConversationActions.create(accountScope: "ps:a", draft: "新草稿", in: source.mainContext)
+        let game = GameRecord(applicationID: "ps:a:game", accountID: "a", titleID: "game",
+                              platform: .playStation, title: "游玩记录", totalMinutes: 222)
+        let plan = SavedGamePlan(accountScopeKey: "ps:a", title: "待玩", sourceConversationID: old.id.uuidString)
+        source.mainContext.insert(game)
+        source.mainContext.insert(plan)
+        source.mainContext.insert(AIGeneratedImage(accountScopeKey: "ps:a", ownerID: old.id, origin: .conversation,
+            prompt: "旧聊天图片", modelName: "test-image", pngData: png()))
+        try source.mainContext.save()
+        var backup = try XCTUnwrap(JSONSerialization.jsonObject(with: ProductDataService.backupData(modelContext: source.mainContext)) as? [String: Any])
+        var chats = try XCTUnwrap(backup["conversations"] as? [[String: Any]])
+        let legacy = try XCTUnwrap(chats.firstIndex { $0["id"] as? String == old.id.uuidString })
+        chats[legacy].removeValue(forKey: "usesLocalQueries")
+        chats[legacy]["messages"] = "旧会话正文无需解析"
+        backup["conversations"] = chats
+        let target = try store()
+        _ = try ProductDataService.restore(data: JSONSerialization.data(withJSONObject: backup), modelContext: target.mainContext)
+        XCTAssertEqual(try target.mainContext.fetch(FetchDescriptor<AIConversation>()).map(\.id), [current.id])
+        XCTAssertEqual(try target.mainContext.fetchCount(FetchDescriptor<AIGeneratedImage>()), 0)
+        XCTAssertEqual(try target.mainContext.fetch(FetchDescriptor<GameRecord>()).map(\.totalMinutes), [222])
+        XCTAssertEqual(try target.mainContext.fetch(FetchDescriptor<SavedGamePlan>()).map(\.sourceConversationID), [old.id.uuidString])
     }
 
     func testForeignImageInBackupIsRejectedBeforeAnyDataIsWritten() throws {
@@ -262,8 +366,8 @@ final class OpenAIIntegrationTests: XCTestCase {
 
     func testRemovingConversationCleansImagesAndAccountDeletionKeepsOtherImages() throws {
         let store = try store()
-        let first = try AIConversationActions.create(accountScope: "ps:a", games: [game], draft: "", in: store.mainContext)
-        let other = try AIConversationActions.create(accountScope: "ps:b", games: [game], draft: "", in: store.mainContext)
+        let first = try AIConversationActions.create(accountScope: "ps:a", draft: "", in: store.mainContext)
+        let other = try AIConversationActions.create(accountScope: "ps:b", draft: "", in: store.mainContext)
         for conversation in [first, other] {
             conversation.messages = [AIChatMessage(role: .user, content: "画图", requestsImage: true)]
             try store.mainContext.save()
@@ -279,13 +383,12 @@ final class OpenAIIntegrationTests: XCTestCase {
         XCTAssertEqual(try store.mainContext.fetchCount(FetchDescriptor<AIGeneratedImage>()), 0)
     }
 
-    func testLegacyTextMessagesDecodeAndImagePromptsContainOnlyPermittedContext() throws {
+    func testImageMessageRequestIncludesDescriptionWithoutLocalIdentifiers() throws {
         let messages = try JSONDecoder().decode([AIChatMessage].self, from: Data(#"[{"role":"user","content":"旧问题"}]"#.utf8))
         XCTAssertFalse(try XCTUnwrap(messages.first).requestsImage)
         XCTAssertNil(messages.first?.imageID)
         let reply = AIChatMessage(role: .assistant, content: "图片已生成。", imageID: UUID(), imageDescription: "宇宙探索")
-        let prompt = AIPrompts.chatImagePrompt(games: [game], messages: messages + [reply])
-        XCTAssertTrue(prompt.contains(game.title))
+        let prompt = reply.requestText
         XCTAssertTrue(prompt.contains("宇宙探索"))
         XCTAssertFalse(prompt.contains(reply.imageID!.uuidString))
         XCTAssertFalse(prompt.contains(reply.id.uuidString))
@@ -307,7 +410,7 @@ final class OpenAIIntegrationTests: XCTestCase {
 
     func testStaleChatWriterCannotReplaceNewMessagesOrDraftMode() throws {
         let store = try store()
-        let conversation = try AIConversationActions.create(accountScope: "ps:a", games: [game], draft: "", in: store.mainContext)
+        let conversation = try AIConversationActions.create(accountScope: "ps:a", draft: "", in: store.mainContext)
         let message = AIChatMessage(role: .user, content: "画一个世界", requestsImage: true)
         try AIConversationActions.persistMessages(conversation.id, messages: [message], expecting: [], draft: "后续画面",
             requestsImage: true, revision: LocalDataRevision.current, in: store.mainContext)
@@ -321,7 +424,7 @@ final class OpenAIIntegrationTests: XCTestCase {
 
     func testLegacyBackupWithoutImagesPreservesNewImagesAndImageDraftMode() throws {
         let store = try store()
-        let conversation = try AIConversationActions.create(accountScope: "ps:a", games: [game], draft: "old", in: store.mainContext)
+        let conversation = try AIConversationActions.create(accountScope: "ps:a", draft: "old", in: store.mainContext)
         var old = try XCTUnwrap(JSONSerialization.jsonObject(with: ProductDataService.backupData(modelContext: store.mainContext)) as? [String: Any])
         old["formatVersion"] = 3
         old.removeValue(forKey: "generatedImages")
@@ -351,7 +454,7 @@ final class OpenAIIntegrationTests: XCTestCase {
             let oldSchema = Schema([GameRecord.self, PlaySnapshot.self, DailyPlayActivity.self, PlayTimeAllocation.self,
                                     AIConversation.self, AIProfileResult.self, SavedGamePlan.self])
             let old = try ModelContainer(for: oldSchema, configurations: ModelConfiguration(url: url))
-            let conversation = AIConversation(id: id, accountScopeKey: "ps:a", games: [game])
+            let conversation = AIConversation(id: id, accountScopeKey: "ps:a")
             conversation.messages = [AIChatMessage(role: .user, content: "画图", requestsImage: true)]
             old.mainContext.insert(conversation)
             try old.mainContext.save()

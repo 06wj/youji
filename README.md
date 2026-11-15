@@ -47,9 +47,9 @@ The new **Midnight Archive** design pairs original adventure art with a dark, co
 
 Use the games you genuinely invested in to uncover your core preferences, depth of engagement, and appetite for challenge. Choose a platform and scope so each analysis answers what matters to you right now.
 
-### Talk to an AI that already knows what you play
+### Ask an AI to look up what you play
 
-No spreadsheets, pasted lists, or repeated explanations. Ask why Soulslikes resonate with you, which game deserves another playthrough, or what to start next. YouJi answers from your own history and keeps the conversation coherent as you follow up.
+Ask what you played in the last month, which games you played for more than two hours, or which PlayStation title has the most trophies. The AI selects a read-only tool when it needs evidence. YouJi queries the conversation's local archive and sends the matching results to OpenAI.
 
 ### Turn your game profile into an image
 
@@ -57,9 +57,9 @@ Ask for an image directly in the chat composer, or generate a **game portrait** 
 
 ### Keep the conversations worth returning to
 
-Each new message also captures the latest 30 days of local play activity, including dates, minutes, short sessions, and available trophy changes. Known daily activity and PlayStation synchronization intervals are distinguished, and your PS date allocations take precedence without double-counting. This reads local history only; retrying a message reuses its original activity snapshot.
+Activity queries add up play time by the final dates shown in your timeline, including short sessions. Retrying a message uses the current local records.
 
-Chats are saved locally and organized into easy-to-find topics. Continue an existing conversation, start a new one, or delete anything you no longer need.
+Chats are saved locally and organized into topics. When you first open this update, YouJi deletes conversations created by the previous snapshot-based chat and their images. Older backups still restore game records and other archive data.
 
 ## A console history that is truly yours
 
@@ -86,18 +86,18 @@ Chats are saved locally and organized into easy-to-find topics. Continue an exis
 AI features use your own model configuration, which you can add in Settings the first time you use them.
 YouJi connects directly to OpenAI. Enter your own OpenAI API key in Settings and configure text and image models separately (defaults: `gpt-6-luna` and `gpt-image-2.6-flare`). The former service and custom endpoint configuration have been removed; its key is not reused. Saving sends no game data, and the connection test sends only a short text request.
 
-Game Brain reopens your latest saved profile and its original filters. Profile follow-ups and short-session/replay prompts create editable drafts; sending remains explicit. Chats preserve drafts and their original game snapshot, and can start a new conversation with updated local records. Saved suggestions can be read in full, edited, linked to a game, and used to mark that game as playing.
+Game Brain reopens your latest saved profile and its original filters. Profile follow-ups and short-session or replay prompts create editable drafts. Chats preserve drafts and use up-to-date local data when a question needs it. Saved suggestions can be read in full, edited, linked to a game, and used to mark that game as playing.
 
 ## Your data stays under your control
 
 - Game records and conversations are stored locally first.
 - YouJi contacts platform or AI services only after an action you initiate.
 - Account credentials and your AI API key are protected by the system and never become part of your game library or this repository.
-- The AI receives only the information needed for the analysis or conversation, never your platform credentials.
+- OpenAI receives the conversation you send and any relevant results from local tools the AI calls. Platform credentials, account identifiers, covers, and private notes stay on the device.
 - AI conversations are separated by the local account scope, personality results can be revisited and shared as image cards, and useful replies can be saved to a local play/replay list.
 - Complete backups never include platform credentials or the AI API key.
 - Backup v4 adds generated images and image drafts while preserving PlayStation date allocations and reset history. It also carries chat drafts, plan links, profile input fingerprints, and stable Switch window dates; older backups remain readable.
-- Backup v4 preserves unreadable conversation data and still imports v1/v2/v3 backups. Restore validates account identities before writing and can repair damaged conversation components from an older readable backup.
+- Backup v4 preserves unreadable message data for current-format chats and still imports v1/v2/v3 archive data. Restore validates account identities before writing and skips snapshot-based chats and their images.
 - Failed writes leave the visible archive unchanged. Deleting, disconnecting, or restoring invalidates older in-flight requests so they cannot repopulate the archive.
 - If the database cannot open, a recovery screen lets you export its original files or restore a JSON backup into a new database while keeping the original. A raw recovery package preserves files for recovery work; it is not a JSON backup.
 

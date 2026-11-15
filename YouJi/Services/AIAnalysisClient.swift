@@ -26,24 +26,51 @@ actor AIAnalysisClient {
             apiKey: apiKey, model: model, maxTokens: 1_024, brief: true)
     }
 
-    func chat(games: [AIAnalysisGame], messages: [AIChatMessage], apiKey: String, model: String,
-              imageModel: String = AISettingsStore.defaultImageModelName,
-              recentPlay: AIRecentPlayContext? = nil, gameSnapshotDate: Date? = nil) async throws -> AIChatReply {
-        guard !games.isEmpty else { throw AIAnalysisError.emptyChatGames }
-        guard messages.contains(where: { $0.role == .user }) else { throw AIAnalysisError.emptyMessage }
-        try recentPlay?.validate()
+    func chat(messages: [AIChatMessage], apiKey: String, model: String,
+              imageModel: String = AISettingsStore.defaultImageModelName, queries: AIChatGameQueries) async throws -> AIChatReply {
+        guard messages.last?.role == .user else { throw AIAnalysisError.emptyMessage }
         try AISettingsStore.validateRequest(apiKey: apiKey, modelName: imageModel)
         let textModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        let body = ResponsesRequest(model: textModel, instructions: AIPrompts.chatSystem(games: games, recentPlay: recentPlay, gameSnapshotDate: gameSnapshotDate),
-            input: messages.map { ResponseInputMessage(role: $0.role.rawValue, content: $0.requestText) },
+        let functions = await AIChatGameQueries.tools.map(ResponseTool.function)
+        let image = ResponseTool.image(ResponseImageTool(model: imageModel.trimmingCharacters(in: .whitespacesAndNewlines)))
+        var body = ResponsesRequest(model: textModel, instructions: AIPrompts.chatSystem(today: queries.today),
+            input: messages.map { .message(ResponseInputMessage(role: $0.role.rawValue, content: $0.requestText)) },
             maxOutputTokens: 6_144,
             reasoning: textModel == AISettingsStore.defaultModelName ? ResponseReasoning(effort: "low") : nil,
-            tools: [ResponseImageTool(model: imageModel.trimmingCharacters(in: .whitespacesAndNewlines))],
-            toolChoice: messages.last?.requestsImage == true ? .image : .auto, maxToolCalls: 1)
-        let data = try await send(url: AISettingsStore.responsesURL, body: body, apiKey: apiKey, model: textModel, imageRequest: true)
-        let result = try decodedResponse(data)
-        let text = try responseText(result)
-        let images = result.output.filter { $0.type == "image_generation_call" }
+            tools: functions + [image], toolChoice: "auto", maxToolCalls: 1,
+            parallelToolCalls: false, include: ["reasoning.encrypted_content"])
+        var seenCalls = Set<String>()
+        var usedLocalRecords = false
+        for round in 0...AIChatGameQueries.maximumCalls {
+            try await queries.checkAccess()
+            if round == AIChatGameQueries.maximumCalls { body.tools = [image] }
+            let data = try await send(url: AISettingsStore.responsesURL, body: body, apiKey: apiKey, model: textModel, imageRequest: true)
+            let result = try decodedResponse(data)
+            let text = try responseText(result)
+            let calls = result.output.filter { $0.fields.type == "function_call" }
+            if calls.isEmpty {
+                return try chatReply(from: result, text: text, imageFallback: messages.last?.content,
+                                     usedLocalRecords: usedLocalRecords)
+            }
+            guard round < AIChatGameQueries.maximumCalls, calls.count == 1, let call = calls.first?.fields,
+                  let callID = call.callID, !callID.isEmpty, callID.utf8.count <= 256,
+                  seenCalls.insert(callID).inserted, let name = call.name, let arguments = call.arguments else {
+                throw AIAnalysisError.invalidResponse
+            }
+            // Reuse the response items in this turn, including encrypted reasoning.
+            // Image replies are terminal and their PNG bytes never enter the continuation.
+            guard result.output.allSatisfy({ $0.replay != nil }) else { throw AIAnalysisError.invalidResponse }
+            let output = try await queries.execute(name: name, arguments: arguments)
+            usedLocalRecords = usedLocalRecords || output.queriedRecords
+            body.input += result.output.compactMap { $0.replay.map(ResponseInputItem.replay) }
+            body.input.append(.functionResult(ResponseFunctionResult(callID: callID, output: output.json)))
+        }
+        throw AIAnalysisError.invalidResponse
+    }
+
+    private func chatReply(from result: ResponsesResult, text: String, imageFallback: String?,
+                           usedLocalRecords: Bool) throws -> AIChatReply {
+        let images = result.output.map(\.fields).filter { $0.type == "image_generation_call" }
         guard images.count <= 1 else { throw AIAnalysisError.invalidResponse }
         var png: Data?
         var description: String?
@@ -53,10 +80,10 @@ actor AIAnalysisClient {
                   let decoded = Data(base64Encoded: encoded) else { throw AIAnalysisError.invalidImage }
             try AIImageValidation.validate(decoded)
             png = decoded
-            description = String((image.revisedPrompt ?? messages.last?.content ?? "游戏图片").prefix(32_000))
+            description = String((image.revisedPrompt ?? imageFallback ?? "游戏图片").prefix(32_000))
         }
         guard !text.isEmpty || png != nil else { throw AIAnalysisError.invalidResponse }
-        return AIChatReply(text: text, imageData: png, imagePrompt: description)
+        return AIChatReply(text: text, imageData: png, imagePrompt: description, usedLocalRecords: usedLocalRecords)
     }
 
     func conversationTitle(messages: [AIChatMessage], apiKey: String, model: String) async throws -> String {
@@ -87,7 +114,7 @@ actor AIAnalysisClient {
     private func completion(instructions: String, messages: [ResponseInputMessage], apiKey: String, model: String,
                             maxTokens: Int, brief: Bool = false) async throws -> String {
         let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        let body = ResponsesRequest(model: model, instructions: instructions, input: messages,
+        let body = ResponsesRequest(model: model, instructions: instructions, input: messages.map(ResponseInputItem.message),
             maxOutputTokens: maxTokens,
             reasoning: model == AISettingsStore.defaultModelName ? ResponseReasoning(effort: brief ? "none" : "low") : nil)
         let data = try await send(url: AISettingsStore.responsesURL, body: body, apiKey: apiKey, model: model)
@@ -106,7 +133,7 @@ actor AIAnalysisClient {
     }
 
     private func responseText(_ result: ResponsesResult) throws -> String {
-        let content = result.output.filter { $0.type == "message" && $0.role == "assistant" }.flatMap { $0.content ?? [] }
+        let content = result.output.map(\.fields).filter { $0.type == "message" && $0.role == "assistant" }.flatMap { $0.content ?? [] }
         guard !content.contains(where: { $0.type == "refusal" }) else { throw AIAnalysisError.refused }
         return content.filter { $0.type == "output_text" }.compactMap(\.text).joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -156,6 +183,7 @@ struct AIChatReply: Sendable {
     let text: String
     var imageData: Data? = nil
     var imagePrompt: String? = nil
+    var usedLocalRecords = false
 }
 
 struct AIAnalysisGame: Codable, Sendable, Equatable, Hashable {
@@ -178,8 +206,9 @@ struct AIChatMessage: Codable, Identifiable, Sendable, Equatable {
     let imageID: UUID?
     let requestsImage: Bool
     let imageDescription: String?
+    let usedLocalRecords: Bool
 
-    enum CodingKeys: String, CodingKey { case id, role, content, createdAt, imageID, requestsImage, imageDescription }
+    enum CodingKeys: String, CodingKey { case id, role, content, createdAt, imageID, requestsImage, imageDescription, usedLocalRecords }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -188,6 +217,7 @@ struct AIChatMessage: Codable, Identifiable, Sendable, Equatable {
         imageID = try values.decodeIfPresent(UUID.self, forKey: .imageID)
         requestsImage = try values.decodeIfPresent(Bool.self, forKey: .requestsImage) ?? false
         imageDescription = try values.decodeIfPresent(String.self, forKey: .imageDescription)
+        usedLocalRecords = try values.decodeIfPresent(Bool.self, forKey: .usedLocalRecords) ?? false
         createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? .distantPast
         if let storedID = try values.decodeIfPresent(UUID.self, forKey: .id) {
             id = storedID
@@ -208,7 +238,8 @@ struct AIChatMessage: Codable, Identifiable, Sendable, Equatable {
 		createdAt: Date = .now,
         imageID: UUID? = nil,
         requestsImage: Bool = false,
-        imageDescription: String? = nil
+        imageDescription: String? = nil,
+        usedLocalRecords: Bool = false
     ) {
         self.id = id
         self.role = role
@@ -217,6 +248,7 @@ struct AIChatMessage: Codable, Identifiable, Sendable, Equatable {
         self.imageID = imageID
         self.requestsImage = requestsImage
         self.imageDescription = imageDescription
+        self.usedLocalRecords = usedLocalRecords
     }
 
     var requestText: String {
@@ -231,24 +263,48 @@ private struct ResponseInputMessage: Encodable {
     let role: String
     let content: String
 }
+private struct ResponseFunctionResult: Encodable {
+    let type = "function_call_output"
+    let callID: String
+    let output: String
+    enum CodingKeys: String, CodingKey { case type, callID = "call_id", output }
+}
+
+private enum ResponseInputItem: Encodable {
+    case message(ResponseInputMessage)
+    case replay([String: ResponseJSON])
+    case functionResult(ResponseFunctionResult)
+
+    func encode(to encoder: Encoder) throws {
+        switch self {
+        case .message(let value): try value.encode(to: encoder)
+        case .replay(let value): try value.encode(to: encoder)
+        case .functionResult(let value): try value.encode(to: encoder)
+        }
+    }
+}
+
 private struct ResponseReasoning: Encodable { let effort: String }
 private struct ResponsesRequest: Encodable {
     let model: String
     let instructions: String
-    let input: [ResponseInputMessage]
+    var input: [ResponseInputItem]
     let maxOutputTokens: Int
     let reasoning: ResponseReasoning?
-    var tools: [ResponseImageTool]? = nil
-    var toolChoice: ResponseToolChoice? = nil
+    var tools: [ResponseTool]? = nil
+    var toolChoice: String? = nil
     var maxToolCalls: Int? = nil
+    var parallelToolCalls: Bool? = nil
+    var include: [String]? = nil
     let store = false
     let stream = false
     enum CodingKeys: String, CodingKey {
-        case model, instructions, input, reasoning, store, stream
+        case model, instructions, input, reasoning, store, stream, include
         case maxOutputTokens = "max_output_tokens"
         case tools
         case toolChoice = "tool_choice"
         case maxToolCalls = "max_tool_calls"
+        case parallelToolCalls = "parallel_tool_calls"
     }
 }
 private struct ResponseImageTool: Encodable {
@@ -263,18 +319,16 @@ private struct ResponseImageTool: Encodable {
         case outputFormat = "output_format"
     }
 }
-private enum ResponseToolChoice: Encodable {
-    case auto, image
+private enum ResponseTool: Encodable, Sendable {
+    case function(AIChatFunctionTool)
+    case image(ResponseImageTool)
+
     func encode(to encoder: Encoder) throws {
-        if self == .auto {
-            var container = encoder.singleValueContainer()
-            try container.encode("auto")
-        } else {
-            var container = encoder.container(keyedBy: Key.self)
-            try container.encode("image_generation", forKey: .type)
+        switch self {
+        case .function(let tool): try tool.encode(to: encoder)
+        case .image(let tool): try tool.encode(to: encoder)
         }
     }
-    private enum Key: String, CodingKey { case type }
 }
 
 private struct ResponsesResult: Decodable {
@@ -282,15 +336,59 @@ private struct ResponsesResult: Decodable {
     let output: [ResponseOutput]
 }
 private struct ResponseOutput: Decodable {
-    let type: String
-    let role: String?
-    let content: [ResponseContent]?
-    let status: String?
-    let result: String?
-    let revisedPrompt: String?
-    enum CodingKeys: String, CodingKey {
-        case type, role, content, status, result
-        case revisedPrompt = "revised_prompt"
+    struct Fields: Decodable {
+        let type: String
+        let role: String?
+        let content: [ResponseContent]?
+        let status: String?
+        let result: String?
+        let revisedPrompt: String?
+        let callID: String?
+        let name: String?
+        let arguments: String?
+        enum CodingKeys: String, CodingKey {
+            case type, role, content, status, result, name, arguments
+            case revisedPrompt = "revised_prompt"
+            case callID = "call_id"
+        }
+    }
+
+    let fields: Fields
+    let replay: [String: ResponseJSON]?
+
+    init(from decoder: Decoder) throws {
+        fields = try Fields(from: decoder)
+        replay = fields.type == "image_generation_call" ? nil : try [String: ResponseJSON](from: decoder)
+    }
+}
+
+/// Preserve API output items for stateless continuation, including fields the app does not interpret.
+private enum ResponseJSON: Codable {
+    case null, boolean(Bool), integer(Int), number(Double), string(String)
+    case array([ResponseJSON]), object([String: ResponseJSON])
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { self = .null }
+        else if let decoded = try? value.decode(Bool.self) { self = .boolean(decoded) }
+        else if let decoded = try? value.decode(Int.self) { self = .integer(decoded) }
+        else if let decoded = try? value.decode(Double.self) { self = .number(decoded) }
+        else if let decoded = try? value.decode(String.self) { self = .string(decoded) }
+        else if let decoded = try? value.decode([ResponseJSON].self) { self = .array(decoded) }
+        else { self = .object(try value.decode([String: ResponseJSON].self)) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null: try container.encodeNil()
+        case .boolean(let value): try container.encode(value)
+        case .integer(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .string(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
+        }
     }
 }
 private struct ResponseContent: Decodable {
@@ -322,7 +420,7 @@ private struct OpenAIErrorResponse: Decodable {
 }
 
 enum AIAnalysisError: LocalizedError {
-    case emptyGames, emptyChatGames, emptyMessage, missingConfiguration
+    case emptyGames, emptyMessage, missingConfiguration
     case invalidResponse, incompleteResponse, invalidImage, imagePromptTooLong, refused, insufficientQuota
     case httpStatus(Int)
     case timedOut, connectionFailed
@@ -330,7 +428,6 @@ enum AIAnalysisError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .emptyGames: "当前筛选没有可分析的游戏。"
-        case .emptyChatGames: "还没有游玩超过 1 小时的游戏。"
         case .emptyMessage: "请输入想聊或想画的内容。"
         case .missingConfiguration: "请先在设置中填写 OpenAI API Key。"
         case .invalidResponse: "OpenAI 返回了无法识别的内容，请稍后重试。"

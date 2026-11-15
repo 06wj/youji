@@ -283,8 +283,8 @@ final class YouJiDataTests: XCTestCase {
             platform: .playStation,
             title: "Kept"
         ))
-        context.insert(AIConversation(accountScopeKey: "ps:123", games: []))
-        context.insert(AIConversation(accountScopeKey: "ps:1234", games: []))
+        context.insert(AIConversation(accountScopeKey: "ps:123"))
+        context.insert(AIConversation(accountScopeKey: "ps:1234"))
         try context.save()
 
         try ProductDataService.deleteArchive(
@@ -531,7 +531,7 @@ final class YouJiDataTests: XCTestCase {
         XCTAssertEqual(activity.accountID, "account-a")
     }
 
-	func testAIPromptsUseSharedGameBrainContext() {
+	func testAIPromptsKeepProfileEvidenceOutOfChatInstructions() {
         let games = [
             AIAnalysisGame(
                 platform: "PS",
@@ -549,7 +549,7 @@ final class YouJiDataTests: XCTestCase {
 
 		let gameInfo = AIPrompts.gameListInfo(games: games)
 		let personality = AIPrompts.personalitySystem(games: games)
-		let chat = AIPrompts.chatSystem(games: games)
+		let chat = AIPrompts.chatSystem(today: "2026-11-15")
 
 		XCTAssertTrue(personality.contains("游戏大脑"))
 		XCTAssertTrue(chat.contains("游戏大脑"))
@@ -557,7 +557,8 @@ final class YouJiDataTests: XCTestCase {
 		XCTAssertTrue(gameInfo.contains("[NS] 塞尔达传说 | 游玩 60h 0m"))
 		XCTAssertFalse(gameInfo.contains("不适用"))
 		XCTAssertFalse(gameInfo.contains("暂无数据"))
-		XCTAssertEqual(AIPrompts.chatMinimumMinutes, 60)
+		XCTAssertTrue(chat.contains("query_play_activity"))
+		XCTAssertFalse(chat.contains("宇宙机器人"))
 	}
 
 	func testConversationTitlePromptUsesRecentConversation() {
@@ -653,25 +654,11 @@ final class YouJiDataTests: XCTestCase {
     }
 
 	@MainActor
-	func testAIConversationPersistsMessagesAndFrozenGameContext() throws {
+	func testAIConversationPersistsMessagesWithoutGameSnapshots() throws {
 		let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
 		let container = try ModelContainer(for: AIConversation.self, configurations: configuration)
 		let context = container.mainContext
-		let games = [
-			AIAnalysisGame(
-				platform: "PS",
-				title: "宇宙机器人",
-				totalMinutes: 725,
-				trophyRatio: "42/44（95%）"
-			),
-			AIAnalysisGame(
-				platform: "NS",
-				title: "塞尔达传说",
-				totalMinutes: 3_600,
-				trophyRatio: nil
-			),
-		]
-		let conversation = AIConversation(accountScopeKey: "ps:a", games: games)
+		let conversation = AIConversation(accountScopeKey: "ps:a")
 		conversation.title = "动作游戏推荐"
 		conversation.messages = [
 			AIChatMessage(role: .user, content: "推荐一款动作游戏"),
@@ -684,7 +671,8 @@ final class YouJiDataTests: XCTestCase {
 		XCTAssertEqual(stored.title, "动作游戏推荐")
 		XCTAssertEqual(stored.messages.map(\.content), ["推荐一款动作游戏", "可以试试宇宙机器人。"])
 		XCTAssertEqual(stored.messages.map(\.role), [.user, .assistant])
-		XCTAssertEqual(stored.games, games)
+		XCTAssertEqual(stored.usesLocalQueries, true)
+		XCTAssertNil(stored.recentPlayContextData)
 		XCTAssertEqual(stored.accountScopeKey, "ps:a")
 		XCTAssertEqual(stored.preview, "可以试试宇宙机器人。")
 	}
@@ -727,9 +715,7 @@ final class YouJiDataTests: XCTestCase {
             day: .now,
             totalMinutes: 30
         ))
-        let conversation = AIConversation(accountScopeKey: "switch:a", games: [
-            AIAnalysisGame(platform: "NS", title: "Game", totalMinutes: 300, trophyRatio: nil)
-        ])
+        let conversation = AIConversation(accountScopeKey: "switch:a")
         conversation.messages = [AIChatMessage(role: .user, content: "聊聊这款游戏")]
         context.insert(conversation)
         let profile = AIProfileResult(
@@ -765,8 +751,7 @@ final class YouJiDataTests: XCTestCase {
         let staleConversation = AIConversation(
             id: conversation.id,
             title: "旧标题",
-            accountScopeKey: "switch:old",
-            games: []
+            accountScopeKey: "switch:old"
         )
         staleConversation.messages = []
         staleConversation.updatedAt = .distantPast
@@ -815,7 +800,7 @@ final class YouJiDataTests: XCTestCase {
         let restoredConversation = try XCTUnwrap(target.mainContext.fetch(FetchDescriptor<AIConversation>()).first)
         XCTAssertEqual(restoredConversation.accountScopeKey, "switch:a")
         XCTAssertEqual(restoredConversation.messages.map(\.content), ["聊聊这款游戏"])
-        XCTAssertEqual(restoredConversation.games.map(\.title), ["Game"])
+        XCTAssertEqual(restoredConversation.usesLocalQueries, true)
         let restoredProfile = try XCTUnwrap(target.mainContext.fetch(FetchDescriptor<AIProfileResult>()).first)
         XCTAssertEqual(restoredProfile.text, "人格内容")
         XCTAssertEqual(restoredProfile.minimumHours, 1)
@@ -1118,9 +1103,8 @@ extension YouJiDataTests {
     @MainActor
     func testUnreadableConversationSurvivesBackupRestoreByteForByte() throws {
         let source = try safetyContainer()
-        let conversation = AIConversation(accountScopeKey: "switch:a", games: [])
+        let conversation = AIConversation(accountScopeKey: "switch:a")
         conversation.messagesData = Data(#"[{"role":"unrecognized","content":"recoverable text"}]"#.utf8)
-        conversation.gameContextData = Data("partial game context".utf8)
         source.mainContext.insert(conversation)
         try source.mainContext.save()
         XCTAssertTrue(conversation.hasUnreadableContent)
@@ -1130,13 +1114,12 @@ extension YouJiDataTests {
         try ProductDataService.restore(data: backup, modelContext: target.mainContext)
         let restored = try XCTUnwrap(target.mainContext.fetch(FetchDescriptor<AIConversation>()).first)
         XCTAssertEqual(restored.messagesData, conversation.messagesData)
-        XCTAssertEqual(restored.gameContextData, conversation.gameContextData)
         XCTAssertTrue(restored.hasUnreadableContent)
         XCTAssertFalse(restored.canDiscardEmptyConversation)
     }
 
     func testLegacyChatMessagesHaveStableIDsWithoutLosingContent() throws {
-        let conversation = AIConversation(games: [])
+        let conversation = AIConversation()
         conversation.messagesData = Data(#"[{"role":"user","content":"相同内容"},{"role":"user","content":"相同内容"}]"#.utf8)
         XCTAssertFalse(conversation.hasUnreadableContent)
         XCTAssertEqual(conversation.messages.map(\.content), ["相同内容", "相同内容"])
@@ -1497,39 +1480,35 @@ extension YouJiDataTests {
     }
 
     @MainActor
-    func testOlderReadableBackupRepairsOnlyDamagedConversationComponents() throws {
+    func testOlderReadableBackupRepairsDamagedMessageData() throws {
         let source = try safetyContainer()
-        let old = AIConversation(createdAt: Date(timeIntervalSince1970: 100), games: [
-            AIAnalysisGame(platform: "NS", title: "Game", totalMinutes: 120, trophyRatio: nil)
-        ])
+        let old = AIConversation(createdAt: Date(timeIntervalSince1970: 100))
         old.messages = [AIChatMessage(role: .user, content: "Old message")]
         old.updatedAt = Date(timeIntervalSince1970: 100)
         source.mainContext.insert(old)
         try source.mainContext.save()
         let backup = try ProductDataService.backupData(modelContext: source.mainContext)
         let target = try safetyContainer()
-        let damaged = AIConversation(id: old.id, games: [])
-        damaged.messages = [AIChatMessage(role: .user, content: "Newer readable message")]
-        damaged.gameContextData = Data("damaged".utf8)
+        let damaged = AIConversation(id: old.id)
+        damaged.messagesData = Data("damaged".utf8)
         damaged.updatedAt = Date(timeIntervalSince1970: 200)
         target.mainContext.insert(damaged)
         try target.mainContext.save()
         try ProductDataService.restore(data: backup, modelContext: target.mainContext)
-        XCTAssertEqual(damaged.messages.map(\.content), ["Newer readable message"])
-        XCTAssertEqual(damaged.games.map(\.title), ["Game"])
+        XCTAssertEqual(damaged.messages.map(\.content), ["Old message"])
         XCTAssertFalse(damaged.hasUnreadableContent)
     }
 
     @MainActor
     func testUnreadableBackupDoesNotReplaceReadableLocalMessages() throws {
         let source = try safetyContainer()
-        let bad = AIConversation(games: [])
+        let bad = AIConversation()
         bad.messagesData = Data("damaged".utf8)
         bad.updatedAt = Date(timeIntervalSince1970: 300)
         source.mainContext.insert(bad)
         try source.mainContext.save()
         let target = try safetyContainer()
-        let local = AIConversation(id: bad.id, games: [])
+        let local = AIConversation(id: bad.id)
         local.messages = [AIChatMessage(role: .user, content: "Keep me")]
         local.updatedAt = Date(timeIntervalSince1970: 100)
         target.mainContext.insert(local)

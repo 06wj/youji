@@ -4,46 +4,18 @@ import SwiftData
 
 @MainActor
 final class AIProductExperienceTests: XCTestCase {
-    func testChatSnapshotKeepsOnlyAllowedFieldsAndStrictPlayTimeWithinAccount() throws {
-        let eligible = GameRecord(applicationID: "ps:local-account:one", accountID: "local-account", titleID: "one",
-                                  platform: .playStation, title: "冒险", totalMinutes: 61,
-                                  imageURL: "https://example.invalid/private-cover", trophiesEarned: 1, trophiesDefined: 10)
-        eligible.personalNote = "私人备注不能进入 AI"
-        eligible.isManuallyHidden = true
-        let boundary = GameRecord(applicationID: "ps:local-account:two", accountID: "local-account", titleID: "two",
-                                  platform: .playStation, title: "刚好一小时", totalMinutes: 60)
-        let otherAccount = GameRecord(applicationID: "ps:another-account:one", accountID: "another-account", titleID: "one",
-                                      platform: .playStation, title: "另一个人的游戏", totalMinutes: 300)
-        let selected = AIGameContext.games(in: "ps:local-account", from: [eligible, boundary, otherAccount])
-        let snapshot = AIGameContext.snapshot(selected)
-        XCTAssertEqual(snapshot.count, 1)
-        XCTAssertEqual(snapshot.first?.title, "冒险")
-        let payload = String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self)
-        XCTAssertFalse(payload.contains("local-account"))
-        XCTAssertFalse(payload.contains("private-cover"))
-        XCTAssertFalse(payload.contains("私人备注"))
-    }
-
-    func testContextChangeDetectsContentWithoutTreatingOrderAsAnUpdate() {
+    func testProfileFingerprintDetectsChangesAndDuplicatesRegardlessOfOrder() {
         let first = AIAnalysisGame(platform: "PS", title: "冒险", totalMinutes: 120, trophyRatio: "1/10")
         let second = AIAnalysisGame(platform: "NS", title: "旅行", totalMinutes: 200, trophyRatio: nil)
-        XCTAssertFalse(AIGameContext.hasChanged(frozen: [first, second], latest: [second, first]))
         let updated = AIAnalysisGame(platform: "PS", title: "冒险", totalMinutes: 120, trophyRatio: "2/10")
-        XCTAssertTrue(AIGameContext.hasChanged(frozen: [first, second], latest: [updated, second]))
-        XCTAssertTrue(AIGameContext.hasChanged(frozen: [first, second], latest: [first]))
-        XCTAssertNotEqual(AIGameContext.fingerprint([first]), AIGameContext.fingerprint([updated]))
-    }
-
-    func testContextComparisonPreservesDuplicateGames() {
-        let first = AIAnalysisGame(platform: "PS", title: "冒险", totalMinutes: 120, trophyRatio: nil)
-        let second = AIAnalysisGame(platform: "NS", title: "冒险", totalMinutes: 120, trophyRatio: nil)
-        XCTAssertFalse(AIGameContext.hasChanged(frozen: [first, first, second], latest: [second, first, first]))
-        XCTAssertTrue(AIGameContext.hasChanged(frozen: [first, first, second], latest: [second, second, first]))
+        XCTAssertEqual(AIGameContext.fingerprint([first, second]), AIGameContext.fingerprint([second, first]))
+        XCTAssertNotEqual(AIGameContext.fingerprint([first, second]), AIGameContext.fingerprint([updated, second]))
+        XCTAssertNotEqual(AIGameContext.fingerprint([first, first, second]), AIGameContext.fingerprint([first, second, second]))
     }
 
     func testRapidTypingCoalescesIntoOneDraftWrite() async throws {
         let store = try ModelContainer(for: LocalDatabaseState.schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-        let conversation = try AIConversationActions.create(accountScope: "ps:a", games: [], draft: "", in: store.mainContext)
+        let conversation = try AIConversationActions.create(accountScope: "ps:a", draft: "", in: store.mainContext)
         let input = AIChatDraft(text: "", requestsImage: false, delay: .milliseconds(30))
         var writes = 0
         input.activate { value in
@@ -147,12 +119,9 @@ final class AIProductExperienceTests: XCTestCase {
         XCTAssertNil(AIProfileSelection.latest(in: profiles, accountScope: "ps:a", platform: "全部", minimumHours: 10))
     }
 
-    func testDraftCarriesProfileAndDoesNotReuseAssistantReplyAsNewQuestion() {
+    func testFollowUpDraftIncludesOnlyTheSelectedProfileAsBackground() {
         let analysis = "你是偏爱探索的玩家。"
         XCTAssertTrue(AIPrompts.profileFollowUpDraft(analysis).contains(analysis))
-        let messages = [AIChatMessage(role: .user, content: "今晚玩什么？"),
-                        AIChatMessage(role: .assistant, content: "考虑重温冒险。")]
-        XCTAssertEqual(AIPrompts.latestRecordDraft(messages: messages), "今晚玩什么？")
     }
 
     func testOpenAIConfigurationUsesFixedEndpointsAndRequiresBothModels() throws {
@@ -167,7 +136,7 @@ final class AIProductExperienceTests: XCTestCase {
     func testEditedDraftSurvivesReopeningAndKeepsEmptyConversation() throws {
         let store = try ModelContainer(for: LocalDatabaseState.schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let conversation = try AIConversationActions.create(
-            accountScope: "ps:a", games: [], draft: "初始推荐草稿", in: store.mainContext
+            accountScope: "ps:a", draft: "初始推荐草稿", in: store.mainContext
         )
         XCTAssertTrue(conversation.modelContext === store.mainContext)
         XCTAssertFalse(conversation.canDiscardEmptyConversation)
@@ -191,7 +160,7 @@ final class AIProductExperienceTests: XCTestCase {
 
     func testPendingUserMessageRestoresRetryWithoutAddingAnyMessage() throws {
         let store = try ModelContainer(for: LocalDatabaseState.schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-        let conversation = AIConversation(accountScopeKey: "ps:a", games: [])
+        let conversation = AIConversation(accountScopeKey: "ps:a")
         conversation.messages = [AIChatMessage(role: .user, content: "今晚玩什么？")]
         store.mainContext.insert(conversation)
         try store.mainContext.save()
@@ -202,44 +171,6 @@ final class AIProductExperienceTests: XCTestCase {
         XCTAssertFalse(reopened.needsReply)
         reopened.messagesData = Data("unreadable".utf8)
         XCTAssertFalse(reopened.needsReply)
-    }
-
-    func testLatestConversationUsesUIContextAndLeavesOriginalSnapshotUnchanged() throws {
-        let store = try ModelContainer(for: LocalDatabaseState.schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-        let oldGame = AIAnalysisGame(platform: "PS", title: "冒险", totalMinutes: 120, trophyRatio: nil)
-        let newGame = AIAnalysisGame(platform: "PS", title: "冒险", totalMinutes: 180, trophyRatio: nil)
-        let original = try AIConversationActions.create(accountScope: "ps:a", games: [oldGame], draft: "原问题", in: store.mainContext)
-        let next = try AIConversationActions.create(accountScope: "ps:a", games: [newGame], draft: original.draft, in: store.mainContext)
-        XCTAssertTrue(next.modelContext === store.mainContext)
-        XCTAssertNotEqual(next.id, original.id)
-        XCTAssertEqual(original.games, [oldGame])
-        XCTAssertEqual(next.games, [newGame])
-        XCTAssertEqual(next.draft, "原问题")
-        XCTAssertTrue(next.messages.isEmpty)
-    }
-
-    func testLegacyMigrationKeepsOnlyLinkedUnscopedPlansWithTheirConversation() throws {
-        let store = try ModelContainer(for: LocalDatabaseState.schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-        let game = GameRecord(applicationID: "ps:a:one", accountID: "a", titleID: "one", platform: .playStation, title: "冒险", totalMinutes: 120)
-        let legacy = AIConversation(createdAt: .distantPast, games: [])
-        let other = AIConversation(accountScopeKey: "ps:b", games: [])
-        let linked = SavedGamePlan(accountScopeKey: "", title: "旧建议", sourceConversationID: legacy.id.uuidString)
-        let unlinked = SavedGamePlan(accountScopeKey: "", title: "其他灵感")
-        let foreign = SavedGamePlan(accountScopeKey: "ps:b", title: "保留账号", sourceConversationID: legacy.id.uuidString)
-        let unrelated = SavedGamePlan(accountScopeKey: "", title: "其他来源", sourceConversationID: other.id.uuidString)
-        store.mainContext.insert(game)
-        [legacy, other].forEach { store.mainContext.insert($0) }
-        [linked, unlinked, foreign, unrelated].forEach { store.mainContext.insert($0) }
-        try store.mainContext.save()
-        try AIConversationActions.migrateLegacyConversations(to: "ps:a", games: [game], in: store.mainContext)
-        let fresh = ModelContext(store)
-        XCTAssertEqual(try LocalPersistence.conversation(legacy.id, in: fresh).accountScopeKey, "ps:a")
-        XCTAssertGreaterThan(try LocalPersistence.conversation(legacy.id, in: fresh).updatedAt, Date.distantPast)
-        let plans = try fresh.fetch(FetchDescriptor<SavedGamePlan>())
-        XCTAssertEqual(plans.first { $0.id == linked.id }?.accountScopeKey, "ps:a")
-        XCTAssertEqual(plans.first { $0.id == unlinked.id }?.accountScopeKey, "")
-        XCTAssertEqual(plans.first { $0.id == foreign.id }?.accountScopeKey, "ps:b")
-        XCTAssertEqual(plans.first { $0.id == unrelated.id }?.accountScopeKey, "")
     }
 
     private func profile(scope: String, platform: String, hours: Int, day: TimeInterval) -> AIProfileResult {

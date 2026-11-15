@@ -74,7 +74,8 @@ enum AIImageService {
                 writer.insert(image)
             }
             let reply = AIChatMessage(role: .assistant, content: text, imageID: imageID,
-                                      imageDescription: imageID == nil ? nil : description)
+                                      imageDescription: imageID == nil ? nil : description,
+                                      usedLocalRecords: result.usedLocalRecords)
             conversation.messages = expectedMessages + [reply]
             return reply
         }

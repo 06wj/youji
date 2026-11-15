@@ -6,7 +6,6 @@ struct AIChatView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @Bindable var conversation: AIConversation
-    @Query private var allGames: [GameRecord]
     @Query private var generatedImages: [AIGeneratedImage]
 
     @State private var archiveRevision = LocalDataRevision.current
@@ -27,9 +26,7 @@ struct AIChatView: View {
     @State private var planTitleDraft = ""
     @State private var planNoteDraft = ""
     @State private var showingConversationInfo = false
-    @State private var recentContextPreview: AIRecentPlayContext?
     @State private var showPlans = false
-    @State private var newConversation: AIConversation?
     @FocusState private var composerFocused: Bool
 
     init(conversation: AIConversation, initialDraft: String = "") {
@@ -82,17 +79,14 @@ struct AIChatView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button("聊天背景", systemImage: "clock.arrow.circlepath") { showContext() }
-                    Button("用最新游戏档案新开对话", systemImage: "square.and.pencil") { startWithLatestRecords() }
-                        .disabled(isSending || latestGames.isEmpty)
+                    Button("数据使用", systemImage: "internaldrive") { showingConversationInfo = true }
                     Button("OpenAI 设置", systemImage: "gearshape") { showSettings = true }
                 } label: { Image(systemName: "ellipsis") }
                 .accessibilityLabel("聊天选项")
             }
         }
         .sheet(isPresented: $showingConversationInfo) {
-            AIChatContextView(games: conversation.games, createdAt: conversation.createdAt,
-                              recentPlay: recentContextPreview)
+            AIChatDataUseView()
         }
         .sheet(isPresented: $showSettings, onDismiss: {
             hasAIConfiguration = AISettingsStore.isConfigured
@@ -101,16 +95,6 @@ struct AIChatView: View {
         }
         .sheet(isPresented: $showPlans) {
             SavedPlansView(accountScopeKey: conversation.accountScopeKey)
-        }
-        .sheet(item: $newConversation) { next in
-            NavigationStack {
-                AIChatView(conversation: next)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button("完成") { newConversation = nil }
-                        }
-                    }
-            }
         }
         .sheet(isPresented: $showPlanEditor) {
             NavigationStack {
@@ -172,31 +156,6 @@ struct AIChatView: View {
                     }
                 }
             } catch { errorMessage = "草稿未能保存：\(error.localizedDescription)" }
-        }
-    }
-
-    private var latestGames: [AIAnalysisGame] {
-        AIGameContext.snapshot(AIGameContext.games(in: conversation.accountScopeKey, from: allGames))
-    }
-
-    private func showContext() {
-        do {
-            recentContextPreview = try AIRecentPlayContextBuilder.capture(accountScope: conversation.accountScopeKey, in: modelContext)
-            showingConversationInfo = true
-        } catch { errorMessage = error.localizedDescription }
-    }
-
-    private func startWithLatestRecords() {
-        guard !latestGames.isEmpty, !isSending, archiveRevision == LocalDataRevision.current else { return }
-        let seed = input.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? AIPrompts.latestRecordDraft(messages: messages) : input.text
-        do {
-            newConversation = try AIConversationActions.create(
-                accountScope: conversation.accountScopeKey, games: latestGames, draft: seed,
-                recentPlay: AIRecentPlayContextBuilder.capture(accountScope: conversation.accountScopeKey, in: modelContext), in: modelContext
-            )
-        } catch {
-            errorMessage = "新对话未能保存：\(error.localizedDescription)"
         }
     }
 
@@ -277,7 +236,7 @@ struct AIChatView: View {
 
     private var composer: some View {
         AIChatComposer(input: input, hasConfiguration: hasAIConfiguration,
-            hasGames: !conversation.games.isEmpty, isSending: isSending,
+            isSending: isSending,
             canRetry: canRetry, hasPendingMessage: messages.last?.role == .user,
             focus: $composerFocused,
             configure: { showSettings = true }, send: sendMessage,
@@ -299,20 +258,12 @@ struct AIChatView: View {
             showSettings = true
             return
         }
-        guard !conversation.games.isEmpty else {
-            errorMessage = "这段对话缺少游戏信息，请新建对话。"
-            return
-        }
-
-        let recentPlay: AIRecentPlayContext
-        do { recentPlay = try AIRecentPlayContextBuilder.capture(accountScope: conversation.accountScopeKey, in: modelContext) }
-        catch { errorMessage = error.localizedDescription; return }
         let userMessage = AIChatMessage(role: .user, content: text)
         let requestMessages = messages + [userMessage]
         input.cancelPendingSave()
         messages.append(userMessage)
         do {
-            try persistMessages(draftValue: "", provisionalTitle: provisionalTitle(from: text), recentPlay: recentPlay)
+            try persistMessages(draftValue: "", provisionalTitle: provisionalTitle(from: text))
         } catch {
             messages.removeLast()
             input.scheduleSave()
@@ -324,34 +275,24 @@ struct AIChatView: View {
         isSending = true
         canRetry = false
         errorMessage = nil
-        requestReply(requestMessages: requestMessages, recentPlay: recentPlay)
+        requestReply(requestMessages: requestMessages)
     }
 
     private func retryLastResponse() {
         guard hasAIConfiguration else { showSettings = true; return }
         guard !isSending, messages.last?.role == .user, !conversation.hasUnreadableContent,
               archiveRevision == LocalDataRevision.current else { return }
-        do {
-            let recentPlay: AIRecentPlayContext
-            if let stored = try conversation.readRecentPlayContext() { recentPlay = stored }
-            else {
-                recentPlay = try AIRecentPlayContextBuilder.capture(accountScope: conversation.accountScopeKey, in: modelContext)
-                try persistMessages(recentPlay: recentPlay)
-            }
-            errorMessage = nil
-            isSending = true
-            canRetry = false
-            requestReply(requestMessages: messages, recentPlay: recentPlay)
-        } catch { errorMessage = error.localizedDescription }
-
+        errorMessage = nil
+        isSending = true
+        canRetry = false
+        requestReply(requestMessages: messages)
     }
 
-    private func requestReply(requestMessages: [AIChatMessage], recentPlay: AIRecentPlayContext) {
+    private func requestReply(requestMessages: [AIChatMessage]) {
         let apiKey = AISettingsStore.apiKey
         let model = AISettingsStore.modelName
         let imageModel = AISettingsStore.imageModelName
-        let requestGames = conversation.games
-        let snapshotDate = conversation.createdAt
+        let queries = AIChatGameQueries(accountScope: conversation.accountScopeKey, in: modelContext, revision: archiveRevision)
         let requestID = UUID()
         activeRequestID = requestID
         requestTask = Task {
@@ -363,9 +304,8 @@ struct AIChatView: View {
                 }
             }
             do {
-                try LocalDataRevision.check(archiveRevision)
-                let result = try await AIAnalysisClient.shared.chat(games: requestGames, messages: requestMessages,
-                    apiKey: apiKey, model: model, imageModel: imageModel, recentPlay: recentPlay, gameSnapshotDate: snapshotDate)
+                let result = try await AIAnalysisClient.shared.chat(messages: requestMessages,
+                    apiKey: apiKey, model: model, imageModel: imageModel, queries: queries)
                 guard activeRequestID == requestID else { return }
                 let reply = try AIImageService.saveChatReply(result, model: imageModel, conversationID: conversation.id,
                     accountScope: conversation.accountScopeKey, expectedMessages: requestMessages,
@@ -432,14 +372,14 @@ struct AIChatView: View {
         }
     }
 
-    private func persistMessages(draftValue: String? = nil, provisionalTitle: String? = nil, recentPlay: AIRecentPlayContext? = nil) throws {
+    private func persistMessages(draftValue: String? = nil, provisionalTitle: String? = nil) throws {
         try LocalDataRevision.check(archiveRevision)
         guard conversation.modelContext != nil, !conversation.isDeleted, !conversation.hasUnreadableContent else {
             throw CancellationError()
         }
         let savedDraft = AIChatDraft.Value(text: draftValue ?? input.text, requestsImage: input.requestsImage)
         try AIConversationActions.persistMessages(conversation.id, messages: messages, expecting: persistedMessages,
-            draft: savedDraft.text, requestsImage: false, provisionalTitle: provisionalTitle, recentPlay: recentPlay,
+            draft: savedDraft.text, requestsImage: false, provisionalTitle: provisionalTitle,
             revision: archiveRevision, in: modelContext)
         persistedMessages = messages
         input.acknowledgeSaved(savedDraft)
@@ -540,6 +480,10 @@ private struct AIChatMessageBubble: View, Equatable {
                                     in: RoundedRectangle(cornerRadius: 20))
                 }
                 if message.role == .assistant {
+                    if message.usedLocalRecords {
+                        Label("已查询本机记录", systemImage: "internaldrive")
+                            .font(.caption2).foregroundStyle(YJColor.muted)
+                    }
                     HStack(spacing: 18) {
                         if !message.content.isEmpty {
                             Button { UIPasteboard.general.string = message.content } label: { Image(systemName: "doc.on.doc") }
@@ -570,7 +514,6 @@ private struct AIChatMessageBubble: View, Equatable {
 private struct AIChatComposer: View {
     @Bindable var input: AIChatDraft
     let hasConfiguration: Bool
-    let hasGames: Bool
     let isSending: Bool
     let canRetry: Bool
     let hasPendingMessage: Bool
@@ -582,7 +525,7 @@ private struct AIChatComposer: View {
     @ScaledMetric(relativeTo: .body) private var fontSize = 15.0
 
     private var canSend: Bool {
-        hasGames && !isSending && !input.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !isSending && !input.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -631,58 +574,22 @@ private struct AIChatComposer: View {
     }
 }
 
-private struct AIChatContextView: View {
+private struct AIChatDataUseView: View {
     @Environment(\.dismiss) private var dismiss
-    let games: [AIAnalysisGame]
-    let createdAt: Date
-    let recentPlay: AIRecentPlayContext?
 
     var body: some View {
         NavigationStack {
             List {
-                Section("游戏偏好背景") {
-                    LabeledContent("游戏", value: "\(games.count) 款")
-                    LabeledContent("档案日期", value: createdAt.formatted(.dateTime.year().month().day()))
-                    Text("保留创建对话时游玩超过 1 小时的累计档案。近 30 天记录还会补充短时游玩；可从聊天选项用最新档案新开对话。")
-                        .font(.caption).foregroundStyle(YJColor.muted)
+                Section("发送给 OpenAI") {
+                    Text("发送消息时会提供当前对话。需要游戏数据时，AI 会按问题查询这段对话对应的本机档案，只接收匹配结果。")
                 }
-                Section("近 30 天游玩记录") {
-                    if let recentPlay {
-                        Text("\(recentPlay.startDayKey) — \(recentPlay.endDayKey)").font(.subheadline)
-                        LabeledContent("可按日确认", value: duration(recentPlay.dailyMinutes))
-                        LabeledContent("未细分的累计变化", value: duration(recentPlay.intervalMinutes))
-                        if let observed = recentPlay.lastObservedAt {
-                            LabeledContent("本地资料更新至", value: observed.formatted(.dateTime.month().day().hour().minute()))
-                        }
-                        if recentPlay.records.isEmpty { Text("暂无近期变化明细，可先手动同步平台。") }
-                    }
-                    Text("每次发送时从本机刷新，重试沿用该次内容，不会自动同步平台。缺少记录不代表没有玩；未分日的 PS 增量可能跨越多个日期。")
-                        .font(.caption).foregroundStyle(YJColor.muted)
-                }
-                if let recentPlay, !recentPlay.records.isEmpty {
-                    Section("将用于总结的明细") {
-                        ForEach(Array(recentPlay.records.enumerated()), id: \.offset) { _, record in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(record.title).font(.subheadline)
-                                Text("\(record.platform) · \(record.dayKey) · \(duration(record.minutes))")
-                                    .font(.caption).foregroundStyle(YJColor.muted)
-                                if record.timing == .syncInterval, let from = record.observedFrom, let to = record.observedTo {
-                                    Text("记录区间：\(from.formatted(.dateTime.month().day().hour().minute())) — \(to.formatted(.dateTime.month().day().hour().minute()))")
-                                        .font(.caption2).foregroundStyle(YJColor.muted)
-                                }
-                            }
-                        }
-                    }
+                Section("游玩时长") {
+                    Text("查询的游玩时长按本机时间线的最终记录日期汇总。")
                 }
             }
             .scrollContentBackground(.hidden).background(YJColor.paper)
-            .navigationTitle("聊天背景").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("数据使用").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
         }
-    }
-
-    private func duration(_ minutes: Int) -> String {
-        let value = abs(minutes)
-        return "\(minutes < 0 ? "−" : "")\(value / 60) 小时 \(value % 60) 分钟"
     }
 }

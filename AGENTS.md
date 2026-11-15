@@ -29,7 +29,7 @@ The interface is Chinese-first. Prefer an official Chinese game title when a pla
 | `YouJi/Models/AIGeneratedImage.swift` | Account-scoped generated PNGs associated with chats or profiles |
 | `YouJi/Services/AIImageService.swift` | Image validation, atomic persistence, cleanup, and explicit Photos saving |
 | `YouJi/Views/AIImageViews.swift` | Explicit profile image generation, local preview, saving, and sharing |
-| `YouJi/Models/AIConversation.swift` | Persistent AI conversation, messages, and frozen game context |
+| `YouJi/Models/AIConversation.swift` | Persistent account-scoped AI conversations, messages, and drafts |
 | `YouJi/Services/ProductDataService.swift` | Versioned backup/restore, CSV, diagnostics, snapshot insights, reminders, and profile share cards |
 | `YouJi/Services/SyncCoordinator.swift` | Only coordinator between views, platform clients, and persistence |
 | `YouJi/Services/PlayStationAPIClient.swift` | PSN authorization, game pagination, localization, trophy fetching and caching |
@@ -38,7 +38,7 @@ The interface is Chinese-first. Prefer an official Chinese game title when a pla
 | `YouJi/Services/KeychainStore.swift` | Platform session and AI API-key storage |
 | `YouJi/Services/AIAnalysisClient.swift` | Explicit AI game-profile and multi-turn chat requests |
 | `YouJi/Services/AIPrompts.swift` | Shared game-brain context plus profile and chat prompt rules |
-| `YouJi/Services/AIRecentPlayContext.swift` | Account-scoped recent 30-day activity capture, date precision, and safe AI context |
+| `YouJi/Services/AIChatGameQueries.swift` | Read-only AI tools for scoped library queries and final allocated play activity |
 | `YouJi/Services/AIChatDraft.swift` | Isolated chat input state, coalesced draft writes, and lifecycle flushes |
 | `YouJi/Services/AISettingsStore.swift` | AI Keychain and model-name settings |
 | `YouJi/Services/CoverImageStore.swift` | Persistent local cover cache and download deduplication |
@@ -68,10 +68,10 @@ Preserve these behaviors unless the user explicitly changes the product requirem
 10. Exported text contains the game name, play time, and trophy ratio. Switch trophies are marked not applicable.
 11. Cover art is stored locally after the first successful download and is excluded from iCloud backup.
 12. AI analysis is never automatic on view appearance. It runs only after an explicit generate action and uses the current filtered result.
-13. AI chat is never automatic. A new conversation snapshots all current-account games with strictly more than 60 minutes; every request includes that snapshot plus the current conversation, and requests happen only after the user sends a message.
+13. AI chat runs only after an explicit send or retry. The initial request contains conversation text and tool definitions. The model can request relevant records from the conversation's local account scope through typed read-only tools.
 14. AI conversations persist locally, can be created, continued, and deleted, and request a short title after the second AI reply.
-15. Chat uses a unified composer. The model may call the image tool only for an explicit image request. New sends append an account-scoped, local 30-day activity snapshot (including dates and short sessions); retries reuse that snapshot without platform synchronization.
-16. AI uses OpenAI directly. Text, images, and retries require an explicit action; retain frozen chat context, image ownership, and backup v4 compatibility. Never reuse a former provider’s credential with OpenAI.
+15. Chat uses a unified composer. The model may call the image tool only for an explicit image request. Activity tools aggregate one duration using the archive timeline's final dates. Retries query the current local archive without platform synchronization.
+16. AI uses OpenAI directly. Preserve account scope, image ownership, and backup v4 compatibility. Upgrades discard pre-query conversations and their chat images. Never reuse a former provider’s credential with OpenAI.
 
 ## Data and identity rules
 
@@ -90,6 +90,7 @@ Preserve these behaviors unless the user explicitly changes the product requirem
 - Views should call `SyncCoordinator`; they should not call platform API clients directly.
 - Do not add background or automatic synchronization without explicit user approval.
 - AI analysis must never receive platform credentials, account IDs, cover data, or unfiltered database contents. Only platform, title, total minutes, and trophy ratio from the visible export filter are allowed.
+- Chat tools return only requested records or aggregates. Keep query scope, raw snapshots, allocation source records, credentials, cover data, and private notes on-device.
 - Preserve PS two-stage persistence: save the full game list first, then fetch trophies serially and save each successful title immediately.
 - Preserve PS trophy incremental caching: if `trophiesSyncedAt` is at or after `lastPlayedAt`, reuse the cached game trophy result. Failed or unmapped responses must not advance `trophiesSyncedAt`.
 - Authentication failures including 401, 403, `invalid_grant`, and `invalid_token` invalidate the affected credential and require reconnection. Other failures should preserve local records and the other platform's session.

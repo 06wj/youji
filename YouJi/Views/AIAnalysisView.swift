@@ -20,7 +20,6 @@ struct AIAnalysisView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \AIProfileResult.generatedAt, order: .reverse) private var allProfiles: [AIProfileResult]
-    @Query private var allConversations: [AIConversation]
     let games: [GameRecord]
     let accountScopeKey: String
 
@@ -110,7 +109,7 @@ struct AIAnalysisView: View {
 				SettingsView(prioritizesAIConfiguration: true)
 			}
 			.sheet(isPresented: $showChat) {
-				AIChatListView(games: games, accountScopeKey: accountScopeKey, initialDraft: chatDraft)
+				AIChatListView(accountScopeKey: accountScopeKey, initialDraft: chatDraft)
 			}
             .sheet(isPresented: $showProfileHistory) {
                 AIProfileHistoryView(accountScopeKey: accountScopeKey)
@@ -142,14 +141,6 @@ struct AIAnalysisView: View {
         }
     }
 
-	private var hasChatGames: Bool {
-		games.contains { $0.totalMinutes > AIPrompts.chatMinimumMinutes }
-	}
-
-    private var hasChatHistory: Bool {
-        allConversations.contains { $0.accountScopeKey == accountScopeKey }
-    }
-
     private var headerSection: some View {
         VStack(spacing: 13) {
             if profileCount > 0 {
@@ -176,7 +167,7 @@ struct AIAnalysisView: View {
                 Button { chatDraft = nil; showChat = true } label: {
                     brainShortcut(
                         title: "游戏聊天",
-                        detail: hasChatGames ? "选下一款游戏" : hasChatHistory ? "查看历史对话" : "暂无可用游戏",
+                        detail: "查记录，聊游戏",
                         icon: "bubble.left.and.bubble.right.fill",
                         foreground: YJColor.paper,
                         background: YJColor.lime,
@@ -184,8 +175,6 @@ struct AIAnalysisView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(!hasChatGames && !hasChatHistory)
-                .opacity(hasChatGames || hasChatHistory ? 1 : 0.45)
 
                 Button { showProfileHistory = true } label: {
                     brainShortcut(
@@ -204,7 +193,7 @@ struct AIAnalysisView: View {
                 VStack(alignment: .leading, spacing: 10) { scenarioButtons }
             }
             .font(.caption.bold()).buttonStyle(.bordered).tint(YJColor.lime)
-            .disabled(!hasChatGames)
+            .disabled(games.isEmpty)
         }
     }
 
@@ -354,8 +343,8 @@ struct AIAnalysisView: View {
                         .font(.subheadline.bold())
                         .frame(maxWidth: .infinity).padding(.vertical, 12)
                 }
-                .buttonStyle(YJPrimaryButtonStyle()).disabled(!hasChatGames)
-                Text("新对话使用当前账号全部游玩超过 1 小时的游戏；分析会放入草稿，点发送才交给 AI。")
+                .buttonStyle(YJPrimaryButtonStyle())
+                Text("分析会放入草稿，点发送才交给 AI。")
                     .font(.caption2).foregroundStyle(YJColor.muted)
 			}
 
