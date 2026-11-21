@@ -150,27 +150,51 @@ final class AIChatGameQueriesTests: XCTestCase {
         let response = try object(output)
         let totals = try XCTUnwrap(response["totals"] as? [String: Any])
         XCTAssertEqual(Set(totals.keys), ["minutes", "psTrophyChange"])
-        XCTAssertEqual(totals["minutes"] as? Int, 1_269)
+        XCTAssertEqual(totals["minutes"] as? Int, 1_492)
         XCTAssertEqual(totals["psTrophyChange"] as? Int, 4)
         XCTAssertEqual(response["knownPlayedGameCount"] as? Int, 4)
         let rows = try XCTUnwrap(response["games"] as? [[String: Any]])
         XCTAssertEqual(rows.compactMap { $0["title"] as? String }, ["动作游戏", "冒险游戏", "短时游戏", "仅有日期"])
-        XCTAssertEqual(rows.compactMap { ($0["totals"] as? [String: Any])?["minutes"] as? Int }, [777, 480, 12])
-        XCTAssertEqual(rows.first { $0["title"] as? String == "仅有日期" }?["lastPlayedDay"] as? String, "2026-11-03")
+        XCTAssertEqual(rows.compactMap { ($0["totals"] as? [String: Any])?["minutes"] as? Int }, [1_000, 480, 12])
+        XCTAssertEqual(rows.first { $0["title"] as? String == "仅有日期" }?["lastPlayedDay"] as? String, "2026-11-02")
         for secret in [start.snapshotID, allocated.applicationID, "private-ps", "private-cover", "private note", "其他账号", "720"] {
             XCTAssertFalse(output.json.contains(secret))
         }
         let daily = try object(queries.execute(name: "query_play_activity", arguments: activityArgs(["group_by": "day"])))
         let days = try XCTUnwrap(daily["days"] as? [[String: Any]])
-        XCTAssertEqual(days.compactMap { $0["day"] as? String }, ["2026-11-02", "2026-11-01", "2026-11-04", "2026-11-03"])
-        XCTAssertEqual(days.compactMap { $0["minutes"] as? Int }, [777, 360, 120, 12])
+        XCTAssertEqual(days.compactMap { $0["day"] as? String }, ["2026-11-01", "2026-11-04", "2026-11-03"])
+        XCTAssertEqual(days.compactMap { $0["minutes"] as? Int }, [1_137, 223, 132])
         XCTAssertEqual(days.compactMap { $0["minutes"] as? Int }.reduce(0, +), totals["minutes"] as? Int)
         let byGameDay = try object(queries.execute(name: "query_play_activity",
             arguments: activityArgs(["group_by": "game_day", "sort_by": "recent", "limit": 1])))
         let gameDays = try XCTUnwrap(byGameDay["gameDays"] as? [[String: Any]])
-        XCTAssertEqual(gameDays.first?["title"] as? String, "冒险游戏")
-        XCTAssertEqual(gameDays.first?["minutes"] as? Int, 120)
+        XCTAssertEqual(gameDays.first?["title"] as? String, "动作游戏")
+        XCTAssertEqual(gameDays.first?["minutes"] as? Int, 223)
         XCTAssertEqual(byGameDay["nextOffset"] as? Int, 1)
+    }
+
+    func testSixOClockBeginsANewActivityWindow() throws {
+        let store = try store()
+        let boundary = date("2027-01-01").addingTimeInterval(6 * 3_600)
+        let before = boundary.addingTimeInterval(-0.5)
+        let record = game("cutoff", title: "跨年游戏", minutes: 90, lastPlayed: before)
+        store.mainContext.insert(record)
+        for (instant, minutes) in [(date("2026-12-31"), 0), (before, 60), (boundary, 90)] {
+            store.mainContext.insert(PlaySnapshot(gameID: record.applicationID, accountID: record.accountID,
+                platform: record.platform, date: instant, totalMinutes: minutes, trophiesEarned: 0))
+        }
+        try store.mainContext.save()
+        let earlier = AIChatGameQueries(accountScope: "ps:private-ps", in: store.mainContext, now: before, calendar: utc)
+        XCTAssertEqual(earlier.today, "2026-12-31")
+        let queries = AIChatGameQueries(accountScope: "ps:private-ps", in: store.mainContext, now: boundary, calendar: utc)
+        XCTAssertEqual(queries.today, "2027-01-01")
+        for (day, minutes) in [("2026-12-31", 60), ("2027-01-01", 30)] {
+            let result = try object(queries.execute(name: "query_play_activity",
+                arguments: activityArgs(["start_day": day, "end_day": day])))
+            XCTAssertEqual((result["totals"] as? [String: Int])?["minutes"], minutes)
+            let rows = try XCTUnwrap(result["games"] as? [[String: Any]])
+            XCTAssertEqual(rows.first?["lastPlayedDay"] as? String, day == "2026-12-31" ? day : nil)
+        }
     }
 
     func testInvalidArgumentsAndStaleRevisionsNeverReadRecords() throws {

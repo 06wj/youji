@@ -146,8 +146,8 @@ actor NintendoAPIClient {
                 title: item.titleName,
                 totalMinutes: item.totalPlayedMinutes,
                 imageURL: item.imageURL,
-                firstPlayedAt: Self.parseDate(item.firstPlayedAt),
-                lastPlayedAt: Self.parseDate(item.lastPlayedAt),
+                firstPlayedAt: Self.playTimestamp(item.firstPlayedAt, calendar: calendar),
+                lastPlayedAt: Self.playTimestamp(item.lastPlayedAt, calendar: calendar),
                 weeklyMinutes: weeklyByTitle[item.titleID] ?? Array(repeating: 0, count: 7),
                 weeklyEndingDayKey: DailyPlayActivity.dayKey(for: today, calendar: calendar)
             )
@@ -168,6 +168,13 @@ actor NintendoAPIClient {
             }
         }
         return NintendoNormalizedHistory(games: games, dailyActivities: dailyActivities)
+    }
+
+    private static func playTimestamp(_ value: String, calendar: Calendar) -> Date? {
+        if let day = DailyPlayActivity.date(fromDayKey: value, calendar: calendar) {
+            return PlayDay.start(of: day, calendar: calendar)
+        }
+        return parseDate(value)
     }
 
     static func parseDate(_ value: String) -> Date? {

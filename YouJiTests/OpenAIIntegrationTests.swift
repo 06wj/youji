@@ -168,7 +168,7 @@ final class OpenAIIntegrationTests: XCTestCase {
         let store = try store()
         let now = Date.now
         let start = DailyPlayActivity.dayKey(for: Calendar.current.date(byAdding: .day, value: -29, to: now)!)
-        let end = DailyPlayActivity.dayKey(for: now)
+        let end = DailyPlayActivity.dayKey(for: PlayDay.label(for: now))
         let record = GameRecord(applicationID: "ps:private-account:secret-title-id", accountID: "private-account", titleID: "secret-title-id",
             platform: .playStation, title: game.title, totalMinutes: 180, imageURL: "https://example.invalid/private-cover")
         record.personalNote = "do not transmit private note"

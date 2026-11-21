@@ -13,6 +13,22 @@ enum PlayTimeAllocationError: LocalizedError {
     }
 }
 
+/// Date labels are midnight values. Only timestamps are converted to a play day.
+enum PlayDay {
+    private static let cutoffHour = 6
+
+    static func label(for timestamp: Date, calendar: Calendar = .current) -> Date {
+        let midnight = calendar.startOfDay(for: timestamp)
+        guard calendar.component(.hour, from: timestamp) < cutoffHour,
+              let previous = calendar.date(byAdding: .day, value: -1, to: midnight) else { return midnight }
+        return calendar.startOfDay(for: previous)
+    }
+
+    static func start(of label: Date, calendar: Calendar = .current) -> Date {
+        calendar.date(bySettingHour: cutoffHour, minute: 0, second: 0, of: label)!
+    }
+}
+
 struct PlayTimeEvent {
     let id: String
     let gameID: String
@@ -45,12 +61,12 @@ enum PlayTimeResolver {
 
     static func draft(from start: PlaySnapshot, to end: PlaySnapshot,
                       calendar: Calendar = .current) -> PlayTimeAllocationValue {
-        let endDay = DailyPlayActivity.dayKey(for: end.date, calendar: calendar)
+        let endDay = DailyPlayActivity.dayKey(for: PlayDay.label(for: end.date, calendar: calendar), calendar: calendar)
         return PlayTimeAllocationValue(
             gameID: end.gameID, accountID: end.accountID,
             startSnapshotID: start.snapshotID, endSnapshotID: end.snapshotID,
             startTotalMinutes: start.totalMinutes, endTotalMinutes: end.totalMinutes,
-            startDayKey: DailyPlayActivity.dayKey(for: start.date, calendar: calendar), endDayKey: endDay,
+            startDayKey: DailyPlayActivity.dayKey(for: PlayDay.label(for: start.date, calendar: calendar), calendar: calendar), endDayKey: endDay,
             days: [AllocatedPlayDay(dayKey: endDay, minutes: end.totalMinutes - start.totalMinutes)],
             updatedAt: .now
         )
@@ -84,7 +100,7 @@ enum PlayTimeResolver {
         // instead of reinterpreting the saved dates in the importing device's zone.
         for (day, date) in [(firstDay, sorted[start].date), (lastDay, sorted[end].date)] {
             let distance = date.timeIntervalSince(day)
-            try require((-14 * 3_600...38 * 3_600).contains(distance), "分配日期范围与原始记录不一致")
+            try require((-14 * 3_600...44 * 3_600).contains(distance), "分配日期范围与原始记录不一致")
         }
         for index in start...end {
             try require(sorted[index].platform == .playStation && sorted[index].accountID == value.accountID,
@@ -178,7 +194,7 @@ enum PlayTimeResolver {
             for day in value.days {
                 guard let date = DailyPlayActivity.date(fromDayKey: day.dayKey, calendar: calendar) else { continue }
                 result.append(PlayTimeEvent(id: "\(value.id):\(day.dayKey)", gameID: value.gameID,
-                                           date: date, minutes: day.minutes, trophies: 0, hasDay: true))
+                                           date: PlayDay.start(of: date, calendar: calendar), minutes: day.minutes, trophies: 0, hasDay: true))
             }
         }
         return result
@@ -188,9 +204,9 @@ enum PlayTimeResolver {
                               calendar: Calendar = .current) -> [PlayHistoryPoint] {
         guard let first = sorted(snapshots).first else { return [] }
         let events = events(snapshots: snapshots, allocations: allocations, calendar: calendar)
-        var byDay = Dictionary(grouping: events) { calendar.startOfDay(for: $0.date) }
+        var byDay = Dictionary(grouping: events) { PlayDay.label(for: $0.date, calendar: calendar) }
             .mapValues { $0.reduce(0) { $0 + $1.minutes } }
-        byDay[calendar.startOfDay(for: first.date), default: 0] += first.totalMinutes
+        byDay[PlayDay.label(for: first.date, calendar: calendar), default: 0] += first.totalMinutes
         var total = 0
         return byDay.keys.sorted().map { day in
             total += byDay[day] ?? 0

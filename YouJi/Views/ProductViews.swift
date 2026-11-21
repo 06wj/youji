@@ -392,7 +392,7 @@ struct GameDetailView: View {
     private func dateMetric(_ label: String, _ date: Date?) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.caption2).foregroundStyle(YJColor.muted)
-            Text(date?.formatted(.dateTime.year().month().day()) ?? "—")
+            Text(date.map { PlayDay.label(for: $0).formatted(.dateTime.year().month().day()) } ?? "—")
                 .font(.caption.bold()).lineLimit(1).minimumScaleFactor(0.75)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -612,7 +612,7 @@ struct InsightsView: View {
         return snapshots.filter { ids.contains($0.gameID) }
     }
     private var snapshotDays: [Date] {
-        Array(Set(relevantSnapshots.map { Calendar.current.startOfDay(for: $0.date) })).sorted()
+        Array(Set(relevantSnapshots.map { PlayDay.label(for: $0.date) })).sorted()
     }
     private var timelineEntries: [PlayTimelineEntry] {
         PlayTimelineBuilder.entries(
@@ -751,7 +751,8 @@ struct InsightsView: View {
     }
 
     private func periodCard(_ title: String, days: Int, color: Color) -> some View {
-        let start = Calendar.current.date(byAdding: .day, value: -(days - 1), to: Calendar.current.startOfDay(for: .now)) ?? .distantPast
+        let day = Calendar.current.date(byAdding: .day, value: 1 - days, to: PlayDay.label(for: .now))!
+        let start = PlayDay.start(of: day)
         let insight = PlayInsightCalculator.insight(snapshots: relevantSnapshots, since: start, allocations: PlayTimeResolver.values(playTimeAllocations))
         return NavigationLink {
             InsightPeriodDetailView(
@@ -786,9 +787,10 @@ struct InsightsView: View {
     }
 
     private var yearCard: some View {
-        let start = Calendar.current.dateInterval(of: .year, for: .now)?.start ?? .distantPast
+        let today = PlayDay.label(for: .now)
+        let start = PlayDay.start(of: Calendar.current.dateInterval(of: .year, for: today)!.start)
         let insight = PlayInsightCalculator.insight(snapshots: relevantSnapshots, since: start, allocations: PlayTimeResolver.values(playTimeAllocations))
-        let year = Calendar.current.component(.year, from: .now)
+        let year = Calendar.current.component(.year, from: today)
         return NavigationLink {
             InsightPeriodDetailView(
                 title: "\(year) 年度回顾",
@@ -1025,22 +1027,22 @@ private struct InsightPeriodDetailView: View {
     private var periodSnapshotDays: [Date] {
         Array(Set(snapshots.lazy
             .filter { $0.date >= start && $0.date <= .now }
-            .map { Calendar.current.startOfDay(for: $0.date) }))
+            .map { PlayDay.label(for: $0.date) }))
             .sorted()
     }
 
     private var monthBreakdowns: [InsightMonthBreakdown] {
         guard showsMonthlyBreakdown else { return [] }
         let calendar = Calendar.current
-        let currentMonth = calendar.dateInterval(of: .month, for: .now)?.start ?? .now
+        let currentMonth = calendar.dateInterval(of: .month, for: PlayDay.label(for: .now))?.start ?? .now
         var month = calendar.dateInterval(of: .month, for: start)?.start ?? start
         var result: [InsightMonthBreakdown] = []
         while month <= currentMonth {
             guard let next = calendar.date(byAdding: .month, value: 1, to: month) else { break }
-            let monthEnd = min(.now, next.addingTimeInterval(-1))
+            let monthEnd = min(.now, Date(timeIntervalSinceReferenceDate: PlayDay.start(of: next).timeIntervalSinceReferenceDate.nextDown))
             result.append(InsightMonthBreakdown(
                 start: month,
-                insight: PlayInsightCalculator.insight(snapshots: snapshots, since: month, now: monthEnd, allocations: PlayTimeResolver.values(playTimeAllocations))
+                insight: PlayInsightCalculator.insight(snapshots: snapshots, since: PlayDay.start(of: month), now: monthEnd, allocations: PlayTimeResolver.values(playTimeAllocations))
             ))
             month = next
         }

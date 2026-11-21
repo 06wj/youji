@@ -74,6 +74,8 @@ PlaySnapshot(
 
 ## 每日游玩记录
 
+有时间戳的活动通过 `PlayDay` 按本地 06:00 换日，查询区间为起始日 06:00 至结束日次日 06:00（不含）。Nintendo 每日汇总和已保存的手动分配使用原日键。原始同步时间继续用于顺序、缓存和备份。
+
 Nintendo 返回最近 7 个自然日的逐日游戏分钟数。同步时会先合并同一天同一游戏的重复条目，再以平台响应中的自然日键 `<platform>:<accountID>:<titleID>:<yyyy-MM-dd>` 写入 `DailyPlayActivity`。日期键独立于设备时区，显示时才转换成本地日期。重复同步只更新同一条记录，已经滚出 Nintendo 七日窗口的历史记录不会删除。`NintendoAPIClient.normalize` 将映射时的自然日保存为 `SyncedGame.weeklyEndingDayKey`，协调层连同七元素数组写入 `GameRecord`。显示窗口始终是当前设备近七个自然日：精确 `DailyPlayActivity` 优先，数组只能根据合法的稳定窗口日期补充；未知日期标为缺少记录，不等同于零。旧版本没有稳定日期的数组不再从 `updatedAt` 猜测或回填日期，已持久化的每日记录继续保留。
 
 PlayStation 当前接口没有逐日分钟明细；没有日期分配时按原同步日期展示变化，不推测每日时长。Switch 游玩日历继续只读取平台每日活动；PS 的日期分配通过时间线、累计曲线和洞察展示。

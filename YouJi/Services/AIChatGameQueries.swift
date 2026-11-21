@@ -73,12 +73,12 @@ struct AIChatGameQueries {
                 "offset": .init(type: "integer", description: "从 0 开始。仅在需要更多时用上次结果的 nextOffset。")
             ]),
         AIChatFunctionTool("query_play_activity", """
-            按游迹时间线的最终记录日期查询自然日范围内的游玩。minutes 是当前范围或分组内的游玩分钟合计。knownPlayedGameCount 是期间有游玩记录的游戏数。只有 lastPlayedDay 的游戏可能缺少时长。
+            按游迹时间线的最终记录日期查询游玩日范围内的游玩。minutes 是当前范围或分组内的游玩分钟合计。knownPlayedGameCount 是期间有游玩记录的游戏数。只有 lastPlayedDay 的游戏可能缺少时长。
             """, properties: [
                 "platform": .init(type: "string", choices: Platform.allCases.map(\.rawValue)),
                 "title_contains": .init(type: "string", description: "游戏名片段，null 表示不限。", nullable: true),
-                "start_day": .init(type: "string", description: "本机自然日 YYYY-MM-DD，包含该日。"),
-                "end_day": .init(type: "string", description: "本机自然日 YYYY-MM-DD，包含该日，至多到今天。"),
+                "start_day": .init(type: "string", description: "本机游玩日 YYYY-MM-DD，包含该日。"),
+                "end_day": .init(type: "string", description: "本机游玩日 YYYY-MM-DD，包含该日，至多到今天。"),
                 "group_by": .init(type: "string", description: "summary 只取汇总，game 按游戏汇总，day 按记录日期汇总，game_day 列出每天各游戏的时长。", choices: ActivityGrouping.allCases.map(\.rawValue)),
                 "sort_by": .init(type: "string", description: "降序，recent 按最近记录日期。", choices: ActivitySort.allCases.map(\.rawValue)),
                 "include_trophies": .init(type: "boolean", description: "问题涉及期间奖杯时才用 true。奖杯净变化按 PS 档案的记录日期汇总。"),
@@ -103,7 +103,7 @@ struct AIChatGameQueries {
         var gregorian = Calendar(identifier: .gregorian)
         gregorian.timeZone = calendar.timeZone
         self.calendar = gregorian
-        today = DailyPlayActivity.dayKey(for: now, calendar: gregorian)
+        today = DailyPlayActivity.dayKey(for: PlayDay.label(for: now, calendar: gregorian), calendar: gregorian)
     }
 
     func checkAccess() throws {
@@ -178,7 +178,7 @@ struct AIChatGameQueries {
                 let trophies = includeTrophies && Self.hasTrophyCount(game)
                 return GameResult.Row(title: Self.exportedTitle(game), platform: game.platform.shortName,
                     totalMinutes: fields.contains(.totalMinutes) ? game.totalMinutes : nil,
-                    lastPlayedDay: fields.contains(.lastPlayed) ? game.lastPlayedAt.map(dayKey) : nil,
+                    lastPlayedDay: fields.contains(.lastPlayed) ? game.lastPlayedAt.map { dayKey(PlayDay.label(for: $0, calendar: calendar)) } : nil,
                     trophiesEarned: trophies ? game.trophiesEarned : nil,
                     trophiesDefined: trophies && game.trophiesDefined > 0 ? game.trophiesDefined : nil,
                     platinumCount: trophies ? game.platinumTrophiesEarned : nil)
@@ -193,6 +193,8 @@ struct AIChatGameQueries {
               let endExclusive = calendar.date(byAdding: .day, value: 1, to: end) else {
             throw QueryError("请选择有效的 YYYY-MM-DD 日期范围，结束日期应不晚于今天。")
         }
+        let lowerBound = PlayDay.start(of: start, calendar: calendar)
+        let upperBound = PlayDay.start(of: endExclusive, calendar: calendar)
         let includeTrophies = args.includeTrophies && args.platform != .ns
         if args.sortBy == .trophies && (!includeTrophies || args.groupBy != .game) {
             throw QueryError("奖杯变化排行需包含 PS 奖杯并按游戏分组。")
@@ -203,8 +205,8 @@ struct AIChatGameQueries {
         var activity = ActivityProjection(collectGameDays: args.groupBy == .gameDay && args.limit > 0)
         var latestObservation = games.lazy.map(\.updatedAt).filter { $0 <= now }.max()
         for game in games {
-            if let last = game.lastPlayedAt, last >= start, last < endExclusive, last <= now {
-                activity.games[game.applicationID, default: .init()].lastPlayedDay = dayKey(last)
+            if let last = game.lastPlayedAt, last >= lowerBound, last < upperBound, last <= now {
+                activity.games[game.applicationID, default: .init()].lastPlayedDay = dayKey(PlayDay.label(for: last, calendar: calendar))
             }
         }
 
@@ -220,10 +222,10 @@ struct AIChatGameQueries {
             })).filter { ids.contains($0.gameID) }
             latestObservation = ([latestObservation].compactMap { $0 } + snapshots.map(\.date)).max()
             let events = PlayTimeResolver.events(snapshots: snapshots, allocations: PlayTimeResolver.values(allocations), calendar: calendar)
-            for event in events where event.date >= start && event.date < endExclusive && event.date <= now {
+            for event in events where event.date >= lowerBound && event.date < upperBound && event.date <= now {
                 let trophies = includeTrophies ? event.trophies : 0
                 guard event.minutes != 0 || trophies != 0 else { continue }
-                activity.record(id: event.gameID, day: dayKey(event.date), minutes: event.minutes, trophies: trophies)
+                activity.record(id: event.gameID, day: dayKey(PlayDay.label(for: event.date, calendar: calendar)), minutes: event.minutes, trophies: trophies)
             }
         }
         if let account = nintendo.first?.accountID {

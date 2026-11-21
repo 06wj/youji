@@ -677,7 +677,7 @@ enum PlayHistoryChartBuilder {
         _ snapshots: [PlaySnapshot],
         calendar: Calendar = .current
     ) -> [PlaySnapshot] {
-        Dictionary(grouping: snapshots) { calendar.startOfDay(for: $0.date) }
+        Dictionary(grouping: snapshots) { PlayDay.label(for: $0.date, calendar: calendar) }
             .compactMap { _, values in values.max { $0.date < $1.date } }
             .sorted { $0.date < $1.date }
     }
@@ -710,7 +710,7 @@ enum PlayTimelineBuilder {
             PlayTimelineEntry(
                 id: "daily:\(activity.activityID)",
                 gameID: activity.gameID,
-                date: activity.displayDay,
+                date: DailyPlayActivity.date(fromDayKey: activity.resolvedDayKey, calendar: calendar) ?? activity.day,
                 addedMinutes: activity.totalMinutes,
                 addedTrophies: 0,
                 source: .dailyActivity
@@ -725,7 +725,7 @@ enum PlayTimelineBuilder {
             let minutes = max(0, event.minutes)
             let trophies = max(0, event.trophies)
             guard minutes > 0 || trophies > 0 else { continue }
-            result.append(PlayTimelineEntry(id: "event:\(event.id)", gameID: event.gameID, date: event.date,
+            result.append(PlayTimelineEntry(id: "event:\(event.id)", gameID: event.gameID, date: PlayDay.label(for: event.date, calendar: calendar),
                                             addedMinutes: minutes, addedTrophies: trophies,
                                             source: event.hasDay ? .dailyActivity : .snapshotChange))
         }
@@ -773,7 +773,7 @@ enum PlayInsightCalculator {
         calendar: Calendar = .current
     ) -> [PlayGameContribution] {
         let events = PlayTimeResolver.events(snapshots: snapshots, allocations: allocations, calendar: calendar).filter {
-            ($0.hasDay ? $0.date >= start : $0.date > start) && $0.date <= now
+            $0.date >= start && $0.date <= now
         }
         return Dictionary(grouping: events, by: \.gameID).compactMap { gameID, values in
             let minuteDelta = max(0, values.reduce(0) { $0 + $1.minutes })

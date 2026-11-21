@@ -14,6 +14,21 @@ final class PlayTimeAllocationTests: XCTestCase {
         DailyPlayActivity.date(fromDayKey: key, calendar: utc)!.addingTimeInterval(Double(hour * 3_600))
     }
 
+    func testPlayDayCutoffAcrossYearAndDaylightSaving() throws {
+        let january = date("2027-01-01", hour: 6)
+        XCTAssertEqual(PlayDay.label(for: january.addingTimeInterval(-0.1), calendar: utc), date("2026-12-31"))
+        XCTAssertEqual(PlayDay.label(for: january, calendar: utc), date("2027-01-01"))
+        var calendar = utc
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/New_York"))
+        for dayKey in ["2026-03-08", "2026-11-01"] {
+            let day = try XCTUnwrap(DailyPlayActivity.date(fromDayKey: dayKey, calendar: calendar))
+            let boundary = PlayDay.start(of: day, calendar: calendar)
+            XCTAssertEqual(calendar.component(.hour, from: boundary), 6)
+            XCTAssertEqual(PlayDay.label(for: boundary, calendar: calendar), day)
+            XCTAssertLessThan(PlayDay.label(for: boundary.addingTimeInterval(-1), calendar: calendar), day)
+        }
+    }
+
     private func container() throws -> ModelContainer {
         try ModelContainer(for: LocalDatabaseState.schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
     }

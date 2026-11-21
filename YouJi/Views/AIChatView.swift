@@ -584,7 +584,7 @@ private struct AIChatDataUseView: View {
                     Text("发送消息时会提供当前对话。需要游戏数据时，AI 会按问题查询这段对话对应的本机档案，只接收匹配结果。")
                 }
                 Section("游玩时长") {
-                    Text("查询的游玩时长按本机时间线的最终记录日期汇总。")
+                    Text("游玩日按本地时间从早上 6 点开始，到次日早上 6 点前结束。")
                 }
             }
             .scrollContentBackground(.hidden).background(YJColor.paper)

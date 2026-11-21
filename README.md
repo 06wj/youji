@@ -57,7 +57,7 @@ Ask for an image directly in the chat composer, or generate a **game portrait** 
 
 ### Keep the conversations worth returning to
 
-Activity queries add up play time by the final dates shown in your timeline, including short sessions. Retrying a message uses the current local records.
+Each play day begins at 6 AM local time. Activity queries add up play time by the final dates shown in your timeline, including short sessions. Retrying a message uses the current local records.
 
 Chats are saved locally and organized into topics. When you first open this update, YouJi deletes conversations created by the previous snapshot-based chat and their images. Older backups still restore game records and other archive data.
 

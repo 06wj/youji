@@ -279,7 +279,16 @@ struct DashboardView: View {
             .onChange(of: sync.isSyncing) { _, isSyncing in
                 if !isSyncing { referenceDate = .now }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in referenceDate = .now }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in referenceDate = .now }
+            .task(id: referenceDate) {
+                let calendar = Calendar.current
+                guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: PlayDay.label(for: referenceDate, calendar: calendar)) else { return }
+                let next = PlayDay.start(of: tomorrow, calendar: calendar)
+                do {
+                    try await Task.sleep(for: .seconds(max(0, next.timeIntervalSinceNow)))
+                    referenceDate = .now
+                } catch { return }
+            }
             .task {
                 sync.backfillNintendoDailyActivities(modelContext: modelContext)
             }
@@ -581,7 +590,7 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("最近游玩").font(.headline)
             ForEach(recentGames, id: \.applicationID) { game in
-                recentGameLine(game, eyebrow: game.lastPlayedAt?.formatted(.dateTime.month().day()) ?? "已收录")
+                recentGameLine(game, eyebrow: game.lastPlayedAt.map { PlayDay.label(for: $0).formatted(.dateTime.month().day()) } ?? "已收录")
             }
         }.padding(16).youjiCard()
     }

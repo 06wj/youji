@@ -32,7 +32,7 @@ struct NintendoActivityWindow {
         }
         let exact = Dictionary(grouping: relevant) { "\($0.gameID):\($0.resolvedDayKey)" }
             .compactMapValues { $0.max { $0.updatedAt < $1.updatedAt } }
-        let today = calendar.startOfDay(for: now)
+        let today = PlayDay.label(for: now, calendar: calendar)
         var gameMinutes: [String: Int] = [:]
         let days = (-6...0).compactMap { offset -> NintendoActivityDay? in
             guard let day = calendar.date(byAdding: .day, value: offset, to: today) else { return nil }
@@ -97,7 +97,7 @@ struct LocalWeeklyReview {
     static func make(games: [GameRecord], snapshots: [PlaySnapshot], activities: [DailyPlayActivity],
                      now: Date = .now, calendar: Calendar = .current,
                      allocations: [PlayTimeAllocationValue] = []) -> LocalWeeklyReview {
-        let today = calendar.startOfDay(for: now)
+        let today = PlayDay.label(for: now, calendar: calendar)
         let start = calendar.date(byAdding: .day, value: -6, to: today) ?? today
         let byID = Dictionary(games.map { ($0.applicationID, $0) }, uniquingKeysWith: { first, _ in first })
         let snapshots = snapshots.filter { snapshot in
@@ -111,7 +111,7 @@ struct LocalWeeklyReview {
         }
         let entries = PlayTimelineBuilder.entries(snapshots: snapshots.filter { $0.platform == .playStation }, activities: activities,
                                                   includedGameIDs: Set(byID.keys), allocations: allocations, calendar: calendar)
-            .filter { $0.date >= start && $0.date <= now }
+            .filter { $0.date >= start && $0.date <= today }
         let reviewGames = Dictionary(grouping: entries, by: \.gameID).compactMap { id, entries -> WeeklyReviewGame? in
             guard let game = byID[id] else { return nil }
             return WeeklyReviewGame(game: game, minutes: entries.reduce(0) { $0 + $1.addedMinutes },
@@ -121,7 +121,7 @@ struct LocalWeeklyReview {
             if $0.trophies != $1.trophies { return $0.trophies > $1.trophies }
             return $0.id < $1.id
         }
-        return LocalWeeklyReview(start: start, end: now, games: reviewGames,
+        return LocalWeeklyReview(start: start, end: today, games: reviewGames,
                                  hasBaseline: !snapshots.isEmpty || !activities.isEmpty,
                                  latestRecord: (snapshots.map(\.date) + activities.map(\.displayDay)).max())
     }

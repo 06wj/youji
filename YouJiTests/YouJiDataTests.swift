@@ -352,7 +352,7 @@ final class YouJiDataTests: XCTestCase {
             includedGameIDs: ["ps:a:game"]
         )
 
-        XCTAssertEqual(entries.map(\.date), [second, third])
+        XCTAssertEqual(entries.map(\.date), [first, second])
         XCTAssertEqual(entries.map(\.addedMinutes), [60, 30])
         XCTAssertEqual(entries.map(\.addedTrophies), [0, 2])
     }
